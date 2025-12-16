@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Основной модуль Telegram бота."""
 
@@ -306,9 +305,6 @@ class BookBot:
     
     async def confirm_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение удаления книги."""
-       
-    async def confirm_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Подтверждение удаления книги."""
         try:
             book_id = int(update.message.text.strip())
             
@@ -473,7 +469,16 @@ class BookBot:
         print("🤖 BookBot запущен!")
         print("📱 Перейдите в Telegram и используйте /start")
         print("=" * 50)
-        self.application.run_polling()
+        
+        # Запускаем бота с обработкой ошибок
+        try:
+            self.application.run_polling()
+        except KeyboardInterrupt:
+            print("\n👋 Бот остановлен")
+        except Exception as e:
+            print(f"❌ Критическая ошибка: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def main():
@@ -493,21 +498,7 @@ def main():
     
     bot = BookBot(token)
     bot.run()
-def run(self):
-    """Запуск бота."""
-    self.setup()
-    print("=" * 50)
-    print("🤖 BookBot запущен!")
-    print(f"📱 Имя бота: @{(await self.application.bot.get_me()).username}")
-    print("📱 Перейдите в Telegram и используйте /start")
-    print("=" * 50)
-    
-    # Обработка ошибок
-    try:
-        await self.application.run_polling()
-    except Exception as e:
-        self.logger.error(f"Ошибка запуска бота: {e}")
-        print(f"❌ Критическая ошибка: {e}")
+
 
 if __name__ == "__main__":
     main()
