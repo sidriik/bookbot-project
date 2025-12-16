@@ -493,7 +493,21 @@ def main():
     
     bot = BookBot(token)
     bot.run()
-
+def run(self):
+    """Запуск бота."""
+    self.setup()
+    print("=" * 50)
+    print("🤖 BookBot запущен!")
+    print(f"📱 Имя бота: @{(await self.application.bot.get_me()).username}")
+    print("📱 Перейдите в Telegram и используйте /start")
+    print("=" * 50)
+    
+    # Обработка ошибок
+    try:
+        await self.application.run_polling()
+    except Exception as e:
+        self.logger.error(f"Ошибка запуска бота: {e}")
+        print(f"❌ Критическая ошибка: {e}")
 
 if __name__ == "__main__":
     main()
