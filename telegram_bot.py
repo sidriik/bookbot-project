@@ -31,6 +31,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode
+from telegram.error import Conflict
 
 # Импортируем DatabaseManager
 from database import DatabaseManager
@@ -66,9 +67,10 @@ class BookBot:
             print(f"[ERROR] Ошибка БД: {e}")
             raise
         
+        # Настройка логирования
         logging.basicConfig(
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            level=logging.WARNING
+            level=logging.INFO
         )
         self.logger = logging.getLogger(__name__)
     
@@ -632,6 +634,26 @@ class BookBot:
         await self.back_to_menu(update, context)
         return CHOOSING
     
+    async def error_handler(self, update: object, context: ContextTypes.DEFAULT_TYPE):
+        """Глобальный обработчик ошибок"""
+        error = str(context.error)
+        
+        # Обработка конфликта
+        if "Conflict" in error:
+            print(f"[ERROR] Конфликт: уже запущен другой экземпляр бота")
+            return
+        
+        print(f"[ERROR] {error}")
+        
+        try:
+            if update and hasattr(update, 'effective_chat'):
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text="❌ Произошла ошибка. Попробуйте снова или перезапустите бота /start"
+                )
+        except:
+            pass
+    
     def setup(self):
         """Настройка обработчиков."""
         self.application = (
@@ -685,33 +707,41 @@ class BookBot:
         )
         
         self.application.add_handler(conv_handler)
+        self.application.add_error_handler(self.error_handler)
     
     def run(self):
         """Запуск бота."""
         self.setup()
-        print("=" * 50)
-        print("BookBot запущен!")
-        print("Отправьте /start в Telegram")
-        print("Ctrl+C для остановки")
-        print("=" * 50)
         
-        self.application.run_polling(
-            poll_interval=1.0,
-            timeout=20,
-            drop_pending_updates=True,
-            allowed_updates=Update.ALL_TYPES
-        )
+        try:
+            # Запускаем с очисткой предыдущих обновлений
+            self.application.run_polling(
+                poll_interval=1.0,
+                timeout=20,
+                drop_pending_updates=True,  # ОЧЕНЬ ВАЖНО: очищает очередь обновлений
+                allowed_updates=Update.ALL_TYPES
+            )
+        except Conflict as e:
+            print(f"\n❌ ОШИБКА: Уже запущен другой экземпляр бота!")
+            print("Сделайте следующее:")
+            print("1. Закройте все окна терминала с запущенным ботом")
+            print("2. Завершите все процессы Python в диспетчере задач")
+            print("3. Запустите бота заново")
+        except Exception as e:
+            print(f"\n❌ Критическая ошибка: {e}")
+            import traceback
+            traceback.print_exc()
 
 
 def main():
     parser = argparse.ArgumentParser(description="BookBot")
-    parser.add_argument('--token', help='Токен бота')
+    parser.add_argument('--token', help='Токен бота', required=True)
     
     args = parser.parse_args()
     token = args.token
     
     if not token:
-        print("Укажите токен бота: python telegram_bot.py --token 'ВАШ_ТОКЕН'")
+        print(" Укажите токен бота: python telegram_bot.py --token 'ВАШ_ТОКЕН'")
         sys.exit(1)
     
     bot = BookBot(token)
