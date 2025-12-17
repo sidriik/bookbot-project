@@ -5,6 +5,7 @@ import logging
 import argparse
 import os
 import sys
+from typing import List, Dict, Any
 
 # Добавляем текущую директорию в путь Python
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,14 +24,17 @@ from telegram.constants import ParseMode
 # Импортируем DatabaseManager напрямую из текущей папки
 from database import DatabaseManager
 
+# Обновленный словарь эмодзи
 EMOJI = {
     "search": "🔍", "star": "⭐️", "fire": "🔥", "trophy": "🏆", "plus": "➕",
     "list": "📋", "help": "❓", "back": "↩️", "home": "🏠", "check": "✅",
     "cross": "❌", "book": "📚", "user": "👤", "pencil": "✏️", "bookshelf": "📖",
-    "trash": "🗑️", "info": "ℹ️"
+    "trash": "🗑️", "info": "ℹ️", "read": "📖", "bookmark": "🔖", 
+    "prev": "⬅️", "next": "➡️", "progress": "📊"
 }
 
-CHOOSING, TYPING_SEARCH, TYPING_BOOK_INFO, CONFIRM_DELETE = range(4)
+# Добавлены новые состояния
+CHOOSING, TYPING_SEARCH, TYPING_BOOK_INFO, CONFIRM_DELETE, TYPING_BOOK_ID, READING = range(6)
 
 class BookBot:
     """Основной класс Telegram бота."""
@@ -68,17 +72,20 @@ class BookBot:
 
 <b>Что умею:</b>
 {EMOJI['search']} Искать книги в вашей библиотеке
-{EMOJI['plus']} Добавлять новые книги
+{EMOJI['plus']} Добавлять новые книги (с текстом!)
 {EMOJI['list']} Показывать все ваши книги
+{EMOJI['read']} <b>Читать книги</b> - новая функция!
 {EMOJI['trash']} Удалять книги
 {EMOJI['trophy']} Показывать статистику
 
 <b>Выберите действие:</b>"""
         
+        # ОБНОВЛЕННАЯ КЛАВИАТУРА
         keyboard = [
             [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['trash']} Удалить")],
-            [KeyboardButton(f"{EMOJI['info']} Статистика"), KeyboardButton(f"{EMOJI['help']} Помощь")]
+            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
+            [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
+            [KeyboardButton(f"{EMOJI['help']} Помощь")]
         ]
         
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -101,19 +108,25 @@ class BookBot:
 /add - Добавить книгу
 /mybooks - Все мои книги
 /delete - Удалить книгу
+/read - Читать книги
 /stats - Статистика
 
 <b>Формат добавления книги:</b>
 <code>Название | Автор | Жанр</code>
 
-<b>Пример:</b>
+<b>Формат добавления книги с текстом:</b>
+<code>Название | Автор | Жанр | Текст книги</code>
+
+<b>Примеры:</b>
 <code>Властелин колец | Толкин | Фэнтези</code>
 <code>1984 | Оруэлл | Антиутопия</code>
-<code>Война и мир | Толстой | Роман</code>
+<code>Тест | Автор | Жанр | Это текст книги...</code>
 
 <b>Для поиска</b> просто введите название, автора или жанр."""
         
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    
+    # ========== СУЩЕСТВУЮЩИЕ МЕТОДЫ ДЛЯ УЧЕТА КНИГ ==========
     
     async def search_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начать поиск книг."""
@@ -147,11 +160,14 @@ class BookBot:
             
             response = f"{EMOJI['search']} <b>Найдено книг: {len(results)}</b>\n\n"
             
-            for book in results:
+            for book in results[:10]:  # Ограничиваем 10 результатами
                 response += f"<b>{book['title']}</b>\n"
                 response += f"{EMOJI['user']} {book['author']}\n"
                 response += f"{EMOJI['pencil']} {book['genre']}\n"
                 response += f"ID: {book['id']}\n\n"
+            
+            if len(results) > 10:
+                response += f"<i>Показано 10 из {len(results)} результатов</i>"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             return CHOOSING
@@ -167,11 +183,10 @@ class BookBot:
     async def add_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Добавить книгу."""
         await update.message.reply_text(
-            f"{EMOJI['plus']} <b>Введите книгу в формате:</b>\n"
-            "<code>Название | Автор | Жанр</code>\n\n"
-            "<i>Примеры:</i>\n"
-            "<code>Властелин колец | Толкин | Фэнтези</code>\n"
-            "<code>1984 | Оруэлл | Антиутопия</code>",
+            f"{EMOJI['plus']} <b>Выберите тип добавления:</b>\n"
+            "1. Книга для учета (без текста)\n"
+            "2. Книга с текстом (для чтения)\n\n"
+            "<b>Введите 1 или 2:</b>",
             parse_mode=ParseMode.HTML
         )
         return TYPING_BOOK_INFO
@@ -180,47 +195,118 @@ class BookBot:
         """Обработка добавления книги."""
         text = update.message.text.strip()
         
-        if "|" not in text:
+        if text == "1":
             await update.message.reply_text(
-                f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
-                "Используйте: <code>Название | Автор | Жанр</code>",
+                f"{EMOJI['plus']} <b>Введите книгу для учета (без текста):</b>\n"
+                "<code>Название | Автор | Жанр</code>\n\n"
+                "<i>Пример:</i>\n"
+                "<code>Властелин колец | Толкин | Фэнтези</code>",
+                parse_mode=ParseMode.HTML
+            )
+            context.user_data['add_type'] = 'simple'
+            return TYPING_BOOK_INFO
+        elif text == "2":
+            await update.message.reply_text(
+                f"{EMOJI['plus']} <b>Введите книгу с текстом:</b>\n"
+                "<code>Название | Автор | Жанр | Текст книги</code>\n\n"
+                "<i>Пример:</i>\n"
+                "<code>Тестовая книга | Автор | Жанр | Это текст книги для тестирования...</code>",
+                parse_mode=ParseMode.HTML
+            )
+            context.user_data['add_type'] = 'with_content'
+            return TYPING_BOOK_INFO
+        else:
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Введите 1 или 2.</b>",
                 parse_mode=ParseMode.HTML
             )
             return TYPING_BOOK_INFO
+    
+    async def handle_add_book_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка деталей добавления книги."""
+        text = update.message.text.strip()
+        add_type = context.user_data.get('add_type', 'simple')
         
         try:
-            title, author, genre = [x.strip() for x in text.split("|")]
-            
-            if len(title) < 2 or len(author) < 2:
-                await update.message.reply_text(
-                    f"{EMOJI['cross']} <b>Слишком короткое название или имя автора.</b>",
-                    parse_mode=ParseMode.HTML
-                )
-                return TYPING_BOOK_INFO
-            
-            # Проверяем, нет ли уже такой книги
-            existing = self.db.search_books(title)
-            for book in existing:
-                if book['title'].lower() == title.lower() and book['author'].lower() == author.lower():
+            if add_type == 'simple':
+                # Книга для учета
+                if "|" not in text or text.count("|") != 2:
                     await update.message.reply_text(
-                        f"{EMOJI['info']} <b>Эта книга уже есть в библиотеке:</b>\n"
-                        f"ID: {book['id']}\n"
-                        f"{EMOJI['bookshelf']} {book['title']}",
+                        f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
+                        "Используйте: <code>Название | Автор | Жанр</code>",
                         parse_mode=ParseMode.HTML
                     )
-                    return CHOOSING
+                    return TYPING_BOOK_INFO
+                
+                parts = [x.strip() for x in text.split("|")]
+                title, author, genre = parts[0], parts[1], parts[2]
+                
+                if len(title) < 2 or len(author) < 2:
+                    await update.message.reply_text(
+                        f"{EMOJI['cross']} <b>Слишком короткое название или имя автора.</b>",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return TYPING_BOOK_INFO
+                
+                # Добавляем книгу
+                book_id = self.db.add_book(title, author, genre)
+                
+                await update.message.reply_text(
+                    f"{EMOJI['check']} <b>Книга для учета успешно добавлена!</b>\n\n"
+                    f"<b>ID:</b> {book_id}\n"
+                    f"<b>Название:</b> {title}\n"
+                    f"<b>Автор:</b> {author}\n"
+                    f"<b>Жанр:</b> {genre}",
+                    parse_mode=ParseMode.HTML
+                )
+                
+            else:
+                # Книга с текстом
+                if "|" not in text or text.count("|") < 3:
+                    await update.message.reply_text(
+                        f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
+                        "Используйте: <code>Название | Автор | Жанр | Текст книги</code>",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return TYPING_BOOK_INFO
+                
+                parts = [x.strip() for x in text.split("|", 3)]
+                title, author, genre, content = parts[0], parts[1], parts[2], parts[3]
+                
+                if len(title) < 2 or len(author) < 2:
+                    await update.message.reply_text(
+                        f"{EMOJI['cross']} <b>Слишком короткое название или имя автора.</b>",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return TYPING_BOOK_INFO
+                
+                if len(content) < 10:
+                    await update.message.reply_text(
+                        f"{EMOJI['cross']} <b>Текст книги слишком короткий.</b>\nМинимум 10 символов.",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return TYPING_BOOK_INFO
+                
+                # Добавляем книгу с текстом
+                book_id = self.db.add_book_with_content(title, author, genre, content)
+                pages = (len(content) // 2000) + 1
+                
+                await update.message.reply_text(
+                    f"{EMOJI['check']} <b>Книга с текстом успешно добавлена!</b>\n\n"
+                    f"<b>ID:</b> {book_id}\n"
+                    f"<b>Название:</b> {title}\n"
+                    f"<b>Автор:</b> {author}\n"
+                    f"<b>Жанр:</b> {genre}\n"
+                    f"<b>Текст:</b> {len(content)} символов\n"
+                    f"<b>Страниц:</b> {pages}\n\n"
+                    f"Теперь можете читать её через {EMOJI['read']} <b>Читать</b>",
+                    parse_mode=ParseMode.HTML
+                )
             
-            # Добавляем книгу в базу
-            book_id = self.db.add_book(title, author, genre)
+            # Очищаем данные
+            if 'add_type' in context.user_data:
+                del context.user_data['add_type']
             
-            await update.message.reply_text(
-                f"{EMOJI['check']} <b>Книга успешно добавлена!</b>\n\n"
-                f"<b>ID:</b> {book_id}\n"
-                f"<b>Название:</b> {title}\n"
-                f"<b>Автор:</b> {author}\n"
-                f"<b>Жанр:</b> {genre}",
-                parse_mode=ParseMode.HTML
-            )
             return CHOOSING
             
         except Exception as e:
@@ -235,8 +321,9 @@ class BookBot:
         """Показать все книги."""
         try:
             books = self.db.get_all_books()
+            books_with_content = self.db.get_books_with_content()
             
-            if not books:
+            if not books and not books_with_content:
                 await update.message.reply_text(
                     f"{EMOJI['list']} <b>Ваша библиотека пуста.</b>\n"
                     f"Используйте {EMOJI['plus']} <b>Добавить</b> для первой книги.",
@@ -244,22 +331,27 @@ class BookBot:
                 )
                 return
             
-            # Если книг много, разбиваем на несколько сообщений
-            if len(books) > 10:
-                await update.message.reply_text(
-                    f"{EMOJI['list']} <b>В вашей библиотеке {len(books)} книг.</b>\n"
-                    f"Показаны первые 10. Используйте поиск для фильтрации.",
-                    parse_mode=ParseMode.HTML
-                )
-                books = books[:10]
+            response = f"{EMOJI['list']} <b>Ваша библиотека</b>\n\n"
             
-            response = f"{EMOJI['list']} <b>Ваша библиотека</b> ({len(books)} книг)\n\n"
+            if books:
+                response += f"<b>📚 Книги для учета ({len(books)}):</b>\n"
+                for i, book in enumerate(books[:5], 1):
+                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']})\n"
+                
+                if len(books) > 5:
+                    response += f"... и еще {len(books) - 5}\n"
+                response += "\n"
             
-            for i, book in enumerate(books, 1):
-                response += f"<b>{i}. {book['title']}</b>\n"
-                response += f"   {EMOJI['user']} {book['author']}\n"
-                response += f"   {EMOJI['pencil']} {book['genre']}\n"
-                response += f"   ID: {book['id']}\n\n"
+            if books_with_content:
+                response += f"<b>📖 Книги для чтения ({len(books_with_content)}):</b>\n"
+                for i, book in enumerate(books_with_content[:5], 1):
+                    pages_info = f"{book['pages']} стр." if book['pages'] > 0 else "нет текста"
+                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {pages_info})\n"
+                
+                if len(books_with_content) > 5:
+                    response += f"... и еще {len(books_with_content) - 5}\n"
+            
+            response += f"\n<i>Для чтения используйте {EMOJI['read']} Читать</i>"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             
@@ -274,8 +366,9 @@ class BookBot:
         """Начать удаление книги."""
         try:
             books = self.db.get_all_books()
+            books_with_content = self.db.get_books_with_content()
             
-            if not books:
+            if not books and not books_with_content:
                 await update.message.reply_text(
                     f"{EMOJI['list']} <b>Нет книг для удаления.</b>",
                     parse_mode=ParseMode.HTML
@@ -284,13 +377,20 @@ class BookBot:
             
             response = f"{EMOJI['trash']} <b>Выберите ID книги для удаления:</b>\n\n"
             
-            for book in books[:15]:  # Показываем только первые 15
-                response += f"<b>ID {book['id']}:</b> {book['title']}\n"
+            all_books = []
+            if books:
+                response += "<b>Книги для учета:</b>\n"
+                for book in books[:8]:
+                    response += f"  ID {book['id']}: {book['title'][:30]}...\n"
+                    all_books.append(('simple', book['id'], book['title']))
             
-            if len(books) > 15:
-                response += f"\n<i>Показано 15 из {len(books)} книг</i>"
+            if books_with_content:
+                response += "\n<b>Книги для чтения:</b>\n"
+                for book in books_with_content[:8]:
+                    response += f"  ID {book['id']}: {book['title'][:30]}...\n"
+                    all_books.append(('content', book['id'], book['title']))
             
-            response += f"\n\n<b>Введите ID книги для удаления:</b>"
+            response += f"\n<b>Введите ID книги для удаления:</b>"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             return CONFIRM_DELETE
@@ -308,28 +408,17 @@ class BookBot:
         try:
             book_id = int(update.message.text.strip())
             
-            # Проверяем, существует ли книга
-            book = self.db.get_book(book_id)
-            if not book:
-                await update.message.reply_text(
-                    f"{EMOJI['cross']} <b>Книга с ID {book_id} не найдена.</b>",
-                    parse_mode=ParseMode.HTML
-                )
-                return CHOOSING
-            
-            # Удаляем книгу
+            # Пробуем удалить из обычных книг
             success = self.db.delete_book(book_id)
             
             if success:
                 await update.message.reply_text(
-                    f"{EMOJI['check']} <b>Книга успешно удалена!</b>\n\n"
-                    f"<b>Название:</b> {book['title']}\n"
-                    f"<b>Автор:</b> {book['author']}",
+                    f"{EMOJI['check']} <b>Книга успешно удалена!</b>",
                     parse_mode=ParseMode.HTML
                 )
             else:
                 await update.message.reply_text(
-                    f"{EMOJI['cross']} <b>Не удалось удалить книгу.</b>",
+                    f"{EMOJI['cross']} <b>Книга с ID {book_id} не найдена.</b>",
                     parse_mode=ParseMode.HTML
                 )
             
@@ -353,42 +442,37 @@ class BookBot:
         """Показать статистику."""
         try:
             books = self.db.get_all_books()
+            books_with_content = self.db.get_books_with_content()
             
-            if not books:
+            if not books and not books_with_content:
                 await update.message.reply_text(
                     f"{EMOJI['info']} <b>В библиотеке пока нет книг.</b>",
                     parse_mode=ParseMode.HTML
                 )
                 return
             
-            # Собираем статистику
-            total_books = len(books)
+            response = f"{EMOJI['trophy']} <b>Статистика библиотеки</b>\n\n"
             
-            # Самые популярные жанры
-            genres = {}
-            authors = {}
+            total_books = len(books) + len(books_with_content)
+            response += f"<b>Всего книг:</b> {total_books}\n"
+            response += f"  📚 Для учета: {len(books)}\n"
+            response += f"  📖 Для чтения: {len(books_with_content)}\n\n"
             
+            # Статистика по жанрам
+            all_genres = {}
             for book in books:
                 genre = book['genre']
-                author = book['author']
-                
-                genres[genre] = genres.get(genre, 0) + 1
-                authors[author] = authors.get(author, 0) + 1
+                all_genres[genre] = all_genres.get(genre, 0) + 1
             
-            # Сортируем
-            top_genres = sorted(genres.items(), key=lambda x: x[1], reverse=True)[:3]
-            top_authors = sorted(authors.items(), key=lambda x: x[1], reverse=True)[:3]
+            for book in books_with_content:
+                genre = book['genre']
+                all_genres[genre] = all_genres.get(genre, 0) + 1
             
-            response = f"{EMOJI['trophy']} <b>Статистика библиотеки</b>\n\n"
-            response += f"<b>Всего книг:</b> {total_books}\n\n"
-            
-            response += f"<b>Топ жанров:</b>\n"
-            for genre, count in top_genres:
-                response += f"  {EMOJI['pencil']} {genre}: {count} книг\n"
-            
-            response += f"\n<b>Топ авторов:</b>\n"
-            for author, count in top_authors:
-                response += f"  {EMOJI['user']} {author}: {count} книг\n"
+            if all_genres:
+                top_genres = sorted(all_genres.items(), key=lambda x: x[1], reverse=True)[:3]
+                response += "<b>Топ жанров:</b>\n"
+                for genre, count in top_genres:
+                    response += f"  {EMOJI['pencil']} {genre}: {count} книг\n"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             
@@ -399,12 +483,218 @@ class BookBot:
                 parse_mode=ParseMode.HTML
             )
     
+    # ========== НОВЫЕ МЕТОДЫ ДЛЯ ЧТЕНИЯ КНИГ ==========
+    
+    async def read_book_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню чтения книг."""
+        try:
+            # Получаем список книг с текстом
+            books = self.db.get_books_with_content()
+            
+            if not books:
+                await update.message.reply_text(
+                    f"{EMOJI['read']} <b>Нет книг для чтения.</b>\n"
+                    f"Сначала добавьте книги с текстом через {EMOJI['plus']} Добавить",
+                    parse_mode=ParseMode.HTML
+                )
+                return CHOOSING
+            
+            response = f"{EMOJI['read']} <b>Доступные для чтения книги:</b>\n\n"
+            
+            for book in books[:10]:
+                pages_info = f"{book['pages']} стр." if book['pages'] > 0 else "нет текста"
+                response += f"<b>ID {book['id']}:</b> {book['title']}\n"
+                response += f"   {EMOJI['user']} {book['author']} | {EMOJI['pencil']} {book['genre']} | {EMOJI['book']} {pages_info}\n\n"
+            
+            if len(books) > 10:
+                response += f"\n<i>Показано 10 из {len(books)} книг</i>"
+            
+            response += f"\n<b>Введите ID книги для чтения:</b>"
+            
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+            return TYPING_BOOK_ID
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка в меню чтения: {e}")
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Ошибка:</b>\n{str(e)}",
+                parse_mode=ParseMode.HTML
+            )
+            return CHOOSING
+    
+    async def handle_read_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка начала чтения книги."""
+        try:
+            book_id = int(update.message.text.strip())
+            user_id = update.effective_user.id
+            
+            # Проверяем, есть ли такая книга с текстом
+            book_page = self.db.get_book_content(book_id, 1)
+            
+            if not book_page:
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Книга с ID {book_id} не найдена или не содержит текста.</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                return CHOOSING
+            
+            # Получаем сохраненный прогресс или начинаем с 1 страницы
+            saved_page = self.db.get_reading_progress(user_id, book_id)
+            current_page = saved_page if saved_page else 1
+            
+            # Получаем страницу книги
+            book_page = self.db.get_book_content(book_id, current_page)
+            
+            if not book_page:
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Не удалось загрузить страницу {current_page}.</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                return CHOOSING
+            
+            # Сохраняем данные в контексте
+            context.user_data['current_book_id'] = book_id
+            context.user_data['current_page'] = current_page
+            
+            # Создаем навигационную клавиатуру
+            keyboard = self._create_reading_keyboard(current_page, book_page['total_pages'])
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            # Формируем ответ
+            response = self._format_book_page(book_page, current_page)
+            
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            return READING
+            
+        except ValueError:
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Введите числовой ID книги.</b>",
+                parse_mode=ParseMode.HTML
+            )
+            return TYPING_BOOK_ID
+        except Exception as e:
+            self.logger.error(f"Ошибка начала чтения: {e}")
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Ошибка при начале чтения:</b>\n{str(e)}",
+                parse_mode=ParseMode.HTML
+            )
+            return CHOOSING
+    
+    async def handle_reading_navigation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка навигации при чтении."""
+        user_id = update.effective_user.id
+        command = update.message.text
+        
+        # Получаем текущие данные
+        book_id = context.user_data.get('current_book_id')
+        current_page = context.user_data.get('current_page', 1)
+        
+        if not book_id:
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Сессия чтения потеряна.</b>\nНачните заново.",
+                parse_mode=ParseMode.HTML
+            )
+            return CHOOSING
+        
+        # Обработка команд навигации
+        if command == "⬅️ Назад":
+            if current_page > 1:
+                current_page -= 1
+        elif command == "➡️ Вперед":
+            current_page += 1
+        elif command == "🔖 Сохранить":
+            # Сохраняем прогресс
+            self.db.save_reading_progress(user_id, book_id, current_page)
+            await update.message.reply_text(
+                f"{EMOJI['bookmark']} <b>Прогресс сохранен!</b>\nСтраница {current_page}",
+                parse_mode=ParseMode.HTML
+            )
+            # Не меняем страницу, просто показываем сообщение
+            book_page = self.db.get_book_content(book_id, current_page)
+        elif command == "🏠 В меню":
+            # Сохраняем прогресс перед выходом
+            self.db.save_reading_progress(user_id, book_id, current_page)
+            await self.back_to_menu(update, context)
+            return CHOOSING
+        else:
+            # Неизвестная команда
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Неизвестная команда.</b>",
+                parse_mode=ParseMode.HTML
+            )
+            book_page = self.db.get_book_content(book_id, current_page)
+        
+        # Получаем новую страницу (если не получили ранее)
+        if 'book_page' not in locals():
+            book_page = self.db.get_book_content(book_id, current_page)
+        
+        if not book_page:
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Страница {current_page} не найдена.</b>",
+                parse_mode=ParseMode.HTML
+            )
+            return READING
+        
+        # Обновляем контекст
+        context.user_data['current_page'] = current_page
+        
+        # Сохраняем прогресс (авто-сохранение)
+        self.db.save_reading_progress(user_id, book_id, current_page)
+        
+        # Создаем клавиатуру
+        keyboard = self._create_reading_keyboard(current_page, book_page['total_pages'])
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Формируем ответ
+        response = self._format_book_page(book_page, current_page)
+        
+        await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+        return READING
+    
+    def _create_reading_keyboard(self, current_page: int, total_pages: int) -> List[List[KeyboardButton]]:
+        """Создание клавиатуры для навигации при чтении."""
+        keyboard = []
+        
+        # Кнопки навигации
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(KeyboardButton("⬅️ Назад"))
+        
+        nav_buttons.append(KeyboardButton("🔖 Сохранить"))
+        
+        if current_page < total_pages:
+            nav_buttons.append(KeyboardButton("➡️ Вперед"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        # Кнопка выхода
+        keyboard.append([KeyboardButton("🏠 В меню")])
+        
+        return keyboard
+    
+    def _format_book_page(self, book_page: Dict[str, Any], current_page: int) -> str:
+        """Форматирование страницы книги для отображения."""
+        response = f"{EMOJI['book']} <b>{book_page['title']}</b>\n"
+        response += f"{EMOJI['user']} {book_page['author']}\n"
+        response += f"{EMOJI['pencil']} {book_page['genre']}\n"
+        response += f"{EMOJI['progress']} Страница {current_page}/{book_page['total_pages']}\n"
+        response += f"{EMOJI['info']} {book_page['progress']} ({book_page['percentage']}%)\n\n"
+        
+        # Форматируем текст (добавляем отступы для читаемости)
+        content = book_page['content'].replace('\n', '\n    ')
+        response += f"<pre>{content}</pre>\n\n"
+        response += f"<i>Используйте кнопки для навигации</i>"
+        
+        return response
+    
     async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Вернуться в меню."""
         keyboard = [
             [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['trash']} Удалить")],
-            [KeyboardButton(f"{EMOJI['info']} Статистика"), KeyboardButton(f"{EMOJI['help']} Помощь")]
+            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
+            [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
+            [KeyboardButton(f"{EMOJI['help']} Помощь")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -435,18 +725,26 @@ class BookBot:
                     MessageHandler(filters.Regex(f"^{EMOJI['search']} Поиск$"), self.search_books),
                     MessageHandler(filters.Regex(f"^{EMOJI['list']} Все книги$"), self.my_books),
                     MessageHandler(filters.Regex(f"^{EMOJI['plus']} Добавить$"), self.add_book),
+                    MessageHandler(filters.Regex(f"^{EMOJI['read']} Читать$"), self.read_book_menu),
                     MessageHandler(filters.Regex(f"^{EMOJI['trash']} Удалить$"), self.delete_book),
                     MessageHandler(filters.Regex(f"^{EMOJI['info']} Статистика$"), self.show_stats),
                     MessageHandler(filters.Regex(f"^{EMOJI['help']} Помощь$"), self.help_cmd),
                     CommandHandler("help", self.help_cmd),
                     CommandHandler("mybooks", self.my_books),
                     CommandHandler("stats", self.show_stats),
+                    CommandHandler("read", self.read_book_menu),
                 ],
                 TYPING_SEARCH: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search),
                 ],
                 TYPING_BOOK_INFO: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_book),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_book_details),
+                ],
+                TYPING_BOOK_ID: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_read_book),
+                ],
+                READING: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_reading_navigation),
                 ],
                 CONFIRM_DELETE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.confirm_delete),
@@ -461,44 +759,4 @@ class BookBot:
         self.application.add_handler(CommandHandler("search", self.search_books))
         self.application.add_handler(CommandHandler("add", self.add_book))
         self.application.add_handler(CommandHandler("delete", self.delete_book))
-    
-    def run(self):
-        """Запуск бота."""
-        self.setup()
-        print("=" * 50)
-        print("🤖 BookBot запущен!")
-        print("📱 Перейдите в Telegram и используйте /start")
-        print("=" * 50)
-        
-        # Запускаем бота с обработкой ошибок
-        try:
-            self.application.run_polling()
-        except KeyboardInterrupt:
-            print("\n👋 Бот остановлен")
-        except Exception as e:
-            print(f"❌ Критическая ошибка: {e}")
-            import traceback
-            traceback.print_exc()
-
-
-def main():
-    """Главная функция."""
-    parser = argparse.ArgumentParser(description="Telegram BookBot")
-    parser.add_argument('--token', help='Токен бота')
-    
-    args = parser.parse_args()
-    
-    token = args.token or os.getenv('TELEGRAM_TOKEN')
-    
-    if not token:
-        print("❌ Ошибка: Укажите токен бота")
-        print("   python telegram_bot.py --token 'ВАШ_ТОКЕН'")
-        print("   или set TELEGRAM_TOKEN='ВАШ_ТОКЕН'")
-        sys.exit(1)
-    
-    bot = BookBot(token)
-    bot.run()
-
-
-if __name__ == "__main__":
-    main()
+        self.application

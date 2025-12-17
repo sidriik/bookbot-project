@@ -28,13 +28,26 @@ class DatabaseManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Таблица книг
+        # Таблица книг (основная - для учета)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS books (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
                 author TEXT NOT NULL,
                 genre TEXT NOT NULL
+            )
+        ''')
+        
+        # Таблица книг с текстом (для чтения)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS books_with_content (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                author TEXT NOT NULL,
+                genre TEXT NOT NULL,
+                content TEXT NOT NULL,
+                page_size INTEGER DEFAULT 2000,
+                added_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
@@ -61,12 +74,27 @@ class DatabaseManager:
             )
         ''')
         
+        # Таблица для отслеживания прогресса чтения
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS reading_progress (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                book_id INTEGER NOT NULL,
+                current_page INTEGER DEFAULT 1,
+                last_read TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (book_id) REFERENCES books_with_content(id),
+                UNIQUE(user_id, book_id)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
+    # ========== ОСНОВНЫЕ МЕТОДЫ ДЛЯ УЧЕТА КНИГ ==========
+    
     def add_book(self, title: str, author: str, genre: str) -> int:
         """
-        Добавление новой книги в базу данных.
+        Добавление новой книги в базу данных (без текста).
         
         Args:
             title (str): Название книги
@@ -183,6 +211,54 @@ class DatabaseManager:
             })
         return results
     
+    def get_all_books(self) -> List[Dict[str, Any]]:
+        """
+        Получение всех книг из базы данных.
+        
+        Returns:
+            List[Dict]: Все книги
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM books ORDER BY title")
+        rows = cursor.fetchall()
+        conn.close()
+        
+        books = []
+        for row in rows:
+            books.append({
+                'id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'genre': row[3]
+            })
+        return books
+    
+    def delete_book(self, book_id: int) -> bool:
+        """
+        Удаление книги из базы данных.
+        
+        Args:
+            book_id (int): ID книги
+            
+        Returns:
+            bool: True если успешно удалено
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        # Сначала удаляем связанные записи в reading_lists
+        cursor.execute("DELETE FROM reading_lists WHERE book_id = ?", (book_id,))
+        cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
+        
+        conn.commit()
+        deleted = cursor.rowcount > 0
+        conn.close()
+        
+        return deleted
+    
+    # ========== МЕТОДЫ ДЛЯ РАБОТЫ С ПОЛЬЗОВАТЕЛЯМИ ==========
+    
     def add_user(self, telegram_id: int, username: str = None) -> int:
         """
         Добавление нового пользователя.
@@ -293,16 +369,169 @@ class DatabaseManager:
         conn.close()
         return updated
     
-    def get_all_books(self) -> List[Dict[str, Any]]:
+    # ========== МЕТОДЫ ДЛЯ ЧТЕНИЯ КНИГ ==========
+    
+    def add_book_with_content(self, title: str, author: str, genre: str, content: str) -> int:
         """
-        Получение всех книг из базы данных.
+        Добавление книги с текстом.
         
+        Args:
+            title (str): Название книги
+            author (str): Автор книги
+            genre (str): Жанр книги
+            content (str): Текст книги
+            
         Returns:
-            List[Dict]: Все книги
+            int: ID добавленной книги
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM books ORDER BY title")
+        
+        cursor.execute(
+            "INSERT INTO books_with_content (title, author, genre, content) VALUES (?, ?, ?, ?)",
+            (title, author, genre, content)
+        )
+        
+        conn.commit()
+        book_id = cursor.lastrowid
+        conn.close()
+        return book_id
+    
+    def get_book_content(self, book_id: int, page: int = 1) -> Optional[Dict[str, Any]]:
+        """
+        Получение страницы книги.
+        
+        Args:
+            book_id (int): ID книги
+            page (int): Номер страницы (начинается с 1)
+            
+        Returns:
+            Dict: Информация о странице книги или None если книга не найдена
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM books_with_content WHERE id = ?", (book_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            conn.close()
+            return None
+        
+        # Извлекаем данные
+        book_id, title, author, genre, content, page_size, added_date = row
+        
+        # Устанавливаем размер страницы по умолчанию
+        if not page_size:
+            page_size = 2000
+        
+        # Вычисляем границы страницы
+        content_length = len(content)
+        start_index = (page - 1) * page_size
+        end_index = min(start_index + page_size, content_length)
+        
+        # Получаем текст страницы
+        page_content = content[start_index:end_index]
+        
+        # Вычисляем общее количество страниц
+        total_pages = content_length // page_size
+        if content_length % page_size > 0:
+            total_pages += 1
+        
+        # Если запрошена несуществующая страница
+        if page > total_pages or page < 1:
+            conn.close()
+            return None
+        
+        conn.close()
+        
+        return {
+            'id': book_id,
+            'title': title,
+            'author': author,
+            'genre': genre,
+            'content': page_content,
+            'page': page,
+            'total_pages': total_pages,
+            'page_size': page_size,
+            'progress': f"{min(end_index, content_length)}/{content_length}",
+            'percentage': round((end_index / content_length) * 100, 1) if content_length > 0 else 0
+        }
+    
+    def save_reading_progress(self, user_id: int, book_id: int, page: int) -> bool:
+        """
+        Сохранение прогресса чтения пользователя.
+        
+        Args:
+            user_id (int): ID пользователя
+            book_id (int): ID книги
+            page (int): Текущая страница
+            
+        Returns:
+            bool: True если успешно сохранено
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            # Вставляем или обновляем прогресс
+            cursor.execute('''
+                INSERT INTO reading_progress (user_id, book_id, current_page)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id, book_id) 
+                DO UPDATE SET current_page = ?, last_read = CURRENT_TIMESTAMP
+            ''', (user_id, book_id, page, page))
+            
+            conn.commit()
+            success = cursor.rowcount > 0
+            conn.close()
+            return success
+        except Exception as e:
+            conn.close()
+            raise e
+    
+    def get_reading_progress(self, user_id: int, book_id: int) -> Optional[int]:
+        """
+        Получение прогресса чтения пользователя.
+        
+        Args:
+            user_id (int): ID пользователя
+            book_id (int): ID книги
+            
+        Returns:
+            int: Номер последней прочитанной страницы или None
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            "SELECT current_page FROM reading_progress WHERE user_id = ? AND book_id = ?",
+            (user_id, book_id)
+        )
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result[0] if result else None
+    
+    def get_books_with_content(self) -> List[Dict[str, Any]]:
+        """
+        Получение всех книг с текстом.
+        
+        Returns:
+            List[Dict]: Список книг с текстом
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, title, author, genre, 
+                   LENGTH(content) as text_length,
+                   added_date 
+            FROM books_with_content 
+            ORDER BY title
+        ''')
+        
         rows = cursor.fetchall()
         conn.close()
         
@@ -312,34 +541,49 @@ class DatabaseManager:
                 'id': row[0],
                 'title': row[1],
                 'author': row[2],
-                'genre': row[3]
+                'genre': row[3],
+                'text_length': row[4],
+                'pages': (row[4] // 2000) + 1 if row[4] > 0 else 1,
+                'added_date': row[5]
             })
+        
         return books
     
-    def delete_book(self, book_id: int) -> bool:
+    def search_books_with_content(self, query: str) -> List[Dict[str, Any]]:
         """
-        Удаление книги из базы данных.
+        Поиск книг с текстом.
         
         Args:
-            book_id (int): ID книги
+            query (str): Поисковый запрос
             
         Returns:
-            bool: True если успешно удалено
+            List[Dict]: Список найденных книг
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Сначала удаляем связанные записи в reading_lists
-        cursor.execute("DELETE FROM reading_lists WHERE book_id = ?", (book_id,))
-        cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
+        cursor.execute('''
+            SELECT id, title, author, genre 
+            FROM books_with_content 
+            WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?
+            ORDER BY title
+        ''', (f'%{query}%', f'%{query}%', f'%{query}%'))
         
-        conn.commit()
-        deleted = cursor.rowcount > 0
+        rows = cursor.fetchall()
         conn.close()
         
-        return deleted
+        results = []
+        for row in rows:
+            results.append({
+                'id': row[0],
+                'title': row[1],
+                'author': row[2],
+                'genre': row[3]
+            })
+        return results
     
-    # ========== ПРОСТОЙ ТЕСТ БЕЗ ЭМОДЗИ ==========
+    # ========== ТЕСТЫ ==========
+    
     @staticmethod
     def simple_test():
         """Простой тест без эмодзи."""
@@ -372,7 +616,6 @@ class DatabaseManager:
         
         # Тест 2: Поиск
         print("\n2. Тест поиска:")
-        # ИЗМЕНЕНО: теперь передаем 2 аргумента
         results = db.search_books('Толстой', 'author')
         print(f"   Найдено книг по автору 'Толстой': {len(results)}")
         
@@ -386,6 +629,22 @@ class DatabaseManager:
         print("\n4. Тест общего поиска:")
         results2 = db.search_books('1984')
         print(f"   Найдено книг по запросу '1984': {len(results2)}")
+        
+        # Тест 5: Книги с текстом
+        print("\n5. Тест книг с текстом:")
+        content_id = db.add_book_with_content(
+            "Тестовая книга", 
+            "Тестовый автор", 
+            "Тест", 
+            "Это тестовый текст книги для проверки функционала чтения."
+        )
+        print(f"   Книга с текстом добавлена, ID: {content_id}")
+        
+        # Получаем текст
+        book_content = db.get_book_content(content_id, 1)
+        if book_content:
+            print(f"   Получена страница: {len(book_content['content'])} символов")
+            print(f"   Прогресс: {book_content['progress']}")
         
         print("\n" + "=" * 50)
         print("ТЕСТ ЗАВЕРШЕН")
