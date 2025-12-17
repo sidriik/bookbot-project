@@ -1,36 +1,36 @@
 class User:
     """
-       Manages user's book collection with reading status and rating tracking.
+    Manages user's book collection with reading status and rating tracking.
 
-       Attributes:
-           user (dict): Dictionary storing user data: {user_id: {book_id: {'status': str, 'rating': int|None}}}
-       """
+    Attributes:
+        user (dict): Dictionary storing user data: {user_id: {book_id: {'status': str, 'rating': int|None}}}
+    """
 
     def __init__(self):
         """
-            Initializes a new User with an empty dictionary.
-                """
+        Initializes a new User with an empty dictionary.
+        """
         self.user = {}
 
     def add_book(self, user_id, book_id, status):
         """
-            Adds a book to a user's collection.
+        Adds a book to a user's collection.
 
-            Args:
-                user_id (int): The unique identifier of the user.
-                book_id (int): The unique identifier of the book
-                status (str): The reading status of the book: "planned", "reading", "completed", "dropped".
+        Args:
+            user_id (int): The unique identifier of the user.
+            book_id (int): The unique identifier of the book
+            status (str): The reading status of the book: "planned", "reading", "completed", "dropped".
 
-            Returns:
-                bool: True if the book was successfully added, False if the book already exists.
+        Returns:
+            bool: True if the book was successfully added, False if the book already exists.
 
-            Raises:
-               ValueError: If invalid status.
-                """
+        Raises:
+            ValueError: If invalid status.
+        """
         try:
             allowed_status = ["planned", "reading", "completed", "dropped"]
             if status not in allowed_status:
-                return ValueError(f"Not allowed status")
+                raise ValueError
             if user_id not in self.user:
                 self.user[user_id] = {}
             if book_id in self.user[user_id]:
@@ -44,22 +44,22 @@ class User:
 
     def rate_book(self, user_id, book_id, rating):
         """
-               Rates a book in the user's collection.
+        Rates a book in the user's collection.
 
-               Args:
-                   user_id (int): The unique identifier of the user.
-                   book_id (int): The unique identifier of the book.
-                   rating (int): The rating value (1-5).
+        Args:
+            user_id (int): The unique identifier of the user.
+            book_id (int): The unique identifier of the book.
+            rating (int): The rating value (1-5).
 
-               Returns:
-                   bool: True if the rating was successfully added, False if user or book not found.
+        Returns:
+            bool: True if the rating was successfully added, False if user or book not found.
 
-               Raises:
-                   ValueError: If the rating is not between 1 and 5.
-               """
+        Raises:
+            ValueError: If the rating is not between 1 and 5.
+        """
         try:
             if rating < 1 or rating > 5:
-                raise ValueError("Rating must be between 1 and 5")
+                raise ValueError
             if user_id not in self.user:
                 return False
             if book_id not in self.user[user_id]:
@@ -72,15 +72,15 @@ class User:
 
     def get_users_book(self, user_id):
         """
-                Gets all books from a user's collection.
+        Gets all books from a user's collection.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-                Returns:
-                    list: List of dictionaries with book info: [{'book_id': int, 'status': str, 'rating': int|None}, ...]
-                          Returns empty list if user has no books.
-                """
+        Returns:
+            list: List of dictionaries with book info: [{'book_id': int, 'status': str, 'rating': int|None}, ...]
+                  Returns empty list if user has no books.
+        """
         try:
             if user_id not in self.user:
                 return []
@@ -98,15 +98,15 @@ class User:
 
     def remove_book(self, user_id, book_id):
         """
-                Removes a book from the user's collection.
+        Removes a book from the user's collection.
 
-                Args:
-                     user_id (int): The unique identifier of the user.
-                     book_id (int): The unique identifier of the book to remove.
+        Args:
+            user_id (int): The unique identifier of the user.
+            book_id (int): The unique identifier of the book to remove.
 
-                Returns:
-                    bool: True if the book was successfully removed, False if user or book not found.
-                """
+        Returns:
+            bool: True if the book was successfully removed, False if user or book not found.
+        """
 
         try:
             if user_id not in self.user:
@@ -123,39 +123,43 @@ class User:
 
     def get_books_by_status(self, user_id, status):
         """
-               Gets books by specific status.
+        Gets books by specific status.
 
-               Args:
-                   user_id (int): The unique identifier of the user.
-                   status (str): The reading status to filter by.
+        Args:
+            user_id (int): The unique identifier of the user.
+            status (str): The reading status to filter by.
 
-               Returns:
-                   list: List of books with specified status: [{'book_id': int,'status': str, 'rating': int|None}, ...]
-                         Returns empty list if no books match the status.
-               """
-        if user_id not in self.user:
+        Returns:
+            list: List of books with specified status: [{'book_id': int,'status': str, 'rating': int|None}, ...]
+                  Returns empty list if no books match the status.
+        """
+        try:
+            if user_id not in self.user:
+                return []
+            books = []
+            for book_id, data in self.user[user_id].items():
+                if data['status'] == status:
+                    books.append({
+                        'book_id': book_id,
+                        'status': data['status'],
+                        'rating': data['rating']
+                    })
+            return books
+        except Exception as e:
+            print(f"Error in get_books_by_status: {e}")
             return []
-        book = []
-        for book_id, data in self.user[user_id].items():
-            if data['status'] == status:
-                book.append({
-                    'book_id': book_id,
-                    'status': data['status'],
-                    'rating': data['rating']
-                })
-        return book
 
     def get_status(self, user_id):
         """
-                Gets reading statistics.
+        Gets reading statistics.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-                Returns:
-                    dict: Statistics: {'total': int, 'planned': int, 'reading': int, 'completed': int, 'dropped': int}
-                          All values are 0 if user has no books.
-                """
+        Returns:
+            dict: Statistics: {'total': int, 'planned': int, 'reading': int, 'completed': int, 'dropped': int}
+                  All values are 0 if user has no books.
+        """
         try:
             stats = {'total': 0, 'planned': 0, 'reading': 0,
                      'completed': 0, 'dropped': 0}
@@ -175,23 +179,23 @@ class User:
 
     def get_new_status(self, user_id, book_id, new_status):
         """
-                Updates book's reading status.
+        Updates book's reading status.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
-                    book_id (int): The unique identifier of the book.
-                    new_status (str): The new reading status: "planned", "reading", "completed", "dropped".
+        Args:
+            user_id (int): The unique identifier of the user.
+            book_id (int): The unique identifier of the book.
+            new_status (str): The new reading status: "planned", "reading", "completed", "dropped".
 
-                Returns:
-                    bool: True if status was successfully updated, False if invalid status, user, or book not found.
+        Returns:
+            bool: True if status was successfully updated, False if invalid status, user, or book not found.
 
-                Raises:
-                    ValueError: If invalid status.
-                """
+        Raises:
+            ValueError: If invalid status.
+        """
         try:
             allowed_status = ["planned", "reading", "completed", "dropped"]
             if new_status not in allowed_status:
-                return ValueError(f"Not allowed status")
+                raise ValueError
             if user_id not in self.user:
                 return False
             if book_id not in self.user[user_id]:
@@ -204,15 +208,15 @@ class User:
 
     def get_average_rating(self, user_id):
         """
-               Calculates average rating of rated books.
+        Calculates average rating of rated books.
 
-               Args:
-                   user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-               Returns:
-                   float: Average rating (2 decimal places).
-                          Returns 0.0 if user has no books or no rated books.
-               """
+        Returns:
+            float: Average rating (2 decimal places).
+                   Returns 0.0 if user has no books or no rated books.
+        """
         try:
             if user_id not in self.user:
                 return 0.0
@@ -232,15 +236,15 @@ class User:
 
     def has_book(self, user_id, book_id):
         """
-                Checks if user has specific book.
+        Checks if user has specific book.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
-                    book_id (int): The unique identifier of the book to check.
+        Args:
+            user_id (int): The unique identifier of the user.
+            book_id (int): The unique identifier of the book to check.
 
-                Returns:
-                    bool: True if the book exists in the user's collection, False otherwise.
-                """
+        Returns:
+            bool: True if the book exists in the user's collection, False otherwise.
+        """
         try:
             if user_id not in self.user:
                 return False
@@ -251,14 +255,14 @@ class User:
 
     def clear_user_books(self, user_id):
         """
-                Removes all books from a user's collection.
+        Removes all books from a user's collection.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-                Returns:
-                    bool: True if the user's books were cleared, False if user not found.
-                """
+        Returns:
+            bool: True if the user's books were cleared, False if user not found.
+        """
         try:
             if user_id in self.user:
                 del self.user[user_id]
@@ -270,14 +274,14 @@ class User:
 
     def get_user_book_count(self, user_id):
         """
-               Gets the total number of books in a user's collection.
+        Gets the total number of books in a user's collection.
 
-               Args:
-                   user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-               Returns:
-                   int: The number of books in the user's collection. Returns 0 if user has no books.
-               """
+        Returns:
+            int: The number of books in the user's collection. Returns 0 if user has no books.
+        """
         try:
             if user_id not in self.user:
                 return 0
@@ -288,14 +292,14 @@ class User:
 
     def count_rated_books(self, user_id):
         """
-                Counts rated books.
+        Counts rated books.
 
-                Args:
-                    user_id (int): The unique identifier of the user.
+        Args:
+            user_id (int): The unique identifier of the user.
 
-                Returns:
-                    int: The number of rated books. Returns 0 if user has no books or no ratings.
-                """
+        Returns:
+            int: The number of rated books. Returns 0 if user has no books or no ratings.
+        """
         try:
             if user_id not in self.user:
                 return 0
@@ -307,6 +311,7 @@ class User:
         except Exception as e:
             print(f"Error in count_rated_books: {e}")
             return 0
+
 # models.py
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
