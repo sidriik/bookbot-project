@@ -713,7 +713,7 @@ class BookBot:
         )
         await self.back_to_menu(update, context)
     
-    def setup(self):
+       def setup(self):
         """Настройка обработчиков."""
         self.application = Application.builder().token(self.token).build()
         
@@ -759,25 +759,32 @@ class BookBot:
         self.application.add_handler(CommandHandler("search", self.search_books))
         self.application.add_handler(CommandHandler("add", self.add_book))
         self.application.add_handler(CommandHandler("delete", self.delete_book))
-        self.application
-    def main():
-        """Главная функция."""
-        parser = argparse.ArgumentParser(description="Telegram BookBot")
-        parser.add_argument('--token', help='Токен бота')
-        
-        args = parser.parse_args()
-        
-        token = args.token or os.getenv('TELEGRAM_TOKEN')
-        
-        if not token:
-            print("❌ Ошибка: Укажите токен бота")
-            print("   python telegram_bot.py --token 'ВАШ_ТОКЕН'")
-            print("   или set TELEGRAM_TOKEN='ВАШ_ТОКЕН'")
-            sys.exit(1)
-        
-        bot = BookBot(token)
-        bot.run()
+    
+    def run(self):
+        """Запуск бота."""
+        self.setup()
+        print("🤖 Бот запущен. Нажмите Ctrl+C для остановки.")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-# ⚠️ УБЕДИТЕСЬ ЧТО ЭТО ЕСТЬ В КОНЦЕ ФАЙЛА:
+
+def main():
+    """Главная функция."""
+    parser = argparse.ArgumentParser(description="Telegram BookBot")
+    parser.add_argument('--token', help='Токен бота')
+    
+    args = parser.parse_args()
+    
+    token = args.token or os.getenv('TELEGRAM_TOKEN')
+    
+    if not token:
+        print("❌ Ошибка: Укажите токен бота")
+        print("   python telegram_bot.py --token 'ВАШ_ТОКЕН'")
+        print("   или set TELEGRAM_TOKEN='ВАШ_ТОКЕН'")
+        sys.exit(1)
+    
+    bot = BookBot(token)
+    bot.run()
+
+
 if __name__ == "__main__":
     main()
