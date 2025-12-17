@@ -5,7 +5,6 @@ import logging
 import argparse
 import sys
 import os
-import tempfile
 from pathlib import Path
 
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
@@ -110,6 +109,7 @@ class BookBot:
 /delete - Удалить книгу
 /read - Читать книги
 /stats - Статистика
+/download <id> - Скачать файл книги
 
 <b>Как добавить книгу:</b>
 1. Нажмите "➕ Добавить книгу"
@@ -137,6 +137,46 @@ class BookBot:
             return CHOOSING
         except Exception as e:
             print(f"[HELP ERROR] {e}")
+            return CHOOSING
+    
+    # ========== ПОИСК ==========
+    
+    async def search_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начать поиск книг."""
+        try:
+            await update.message.reply_text(f"{EMOJI['search']} Введите запрос для поиска:")
+            return TYPING_SEARCH
+        except Exception as e:
+            print(f"[SEARCH ERROR] {e}")
+            return CHOOSING
+    
+    async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка поиска книг."""
+        try:
+            query = update.message.text.strip()
+            if not query:
+                await update.message.reply_text("Введите текст для поиска")
+                return TYPING_SEARCH
+            
+            results = self.db.search_books(query)
+            
+            if not results:
+                await update.message.reply_text(f"По запросу '{query}' ничего не найдено.")
+                return CHOOSING
+            
+            response = f"🔍 Найдено книг: {len(results)}\n\n"
+            for book in results[:5]:
+                response += f"<b>{book['title']}</b>\n"
+                response += f"Автор: {book['author']}\n"
+                response += f"Жанр: {book.get('genre', 'не указан')}\n"
+                response += f"ID: {book['id']}\n\n"
+            
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+            return CHOOSING
+            
+        except Exception as e:
+            print(f"[HANDLE SEARCH ERROR] {e}")
+            await update.message.reply_text("Ошибка поиска")
             return CHOOSING
     
     async def add_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -306,7 +346,7 @@ class BookBot:
             book_id = self.db.add_book_with_content(title, author, genre, content)
             
             # Сохраняем информацию о файле в базу
-            self.db.save_book_file_info(book_id, str(file_path), file_info['file_ext'], file_info['file_size'])
+            self.db.save_book_file_info(book_id, str(file_path), file_info['file_ext'], file_info['file_size'], file_info['file_name'])
             
             await update.message.reply_text(
                 f"✅ Книга из файла добавлена!\n\n"
@@ -441,13 +481,280 @@ class BookBot:
                 if len(books_with_files) > 5:
                     response += f"... и еще {len(books_with_files) - 5}\n"
             
-            response += f"\nДля чтения используйте {EMOJI['read']} Читать"
+            response += f"\nДля чтения используйте {EMOJI['read']} Читать\n"
+            response += f"Для скачивания: /download ID_книги"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             
         except Exception as e:
             print(f"[MYBOOKS ERROR] {e}")
             await update.message.reply_text("❌ Ошибка получения списка")
+    
+    # ========== ЧТЕНИЕ КНИГ ==========
+    
+    async def read_book_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Меню выбора книги для чтения."""
+        try:
+            books_with_content = self.db.get_books_with_content()
+            books_with_files = self.db.get_books_with_files()
+            
+            # Объединяем книги с текстом и из файлов
+            all_books = books_with_content + books_with_files
+            
+            if not all_books:
+                await update.message.reply_text("📭 Нет книг для чтения. Добавьте книгу с текстом или файлом!")
+                return CHOOSING
+            
+            response = "<b>📖 Доступные книги для чтения:</b>\n\n"
+            for book in all_books[:10]:
+                content_len = len(book.get('content', ''))
+                pages = (content_len // 2000) + 1 if content_len > 0 else 0
+                file_ext = book.get('file_ext', '')
+                
+                response += f"ID {book['id']}: {book['title']}\n"
+                response += f"   Автор: {book['author']} | Жанр: {book.get('genre', '')}"
+                if file_ext:
+                    response += f" | Файл: {file_ext}"
+                response += f" | Страниц: {pages}\n\n"
+            
+            if len(all_books) > 10:
+                response += f"\n📄 Показано 10 из {len(all_books)} книг"
+            
+            response += "\n<b>Введите ID книги для чтения:</b>"
+            
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+            return TYPING_BOOK_ID
+            
+        except Exception as e:
+            print(f"[READ MENU ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка загрузки списка книг")
+            return CHOOSING
+    
+    async def handle_read_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка начала чтения книги."""
+        try:
+            user_input = update.message.text.strip()
+            
+            try:
+                book_id = int(user_input)
+            except ValueError:
+                await update.message.reply_text("❌ Введите числовой ID книги")
+                return TYPING_BOOK_ID
+            
+            # Получаем страницу книги
+            book_page = self.db.get_book_content(book_id, 1)
+            
+            if not book_page:
+                await update.message.reply_text(
+                    f"❌ Книга с ID {book_id} не найдена или не содержит текста.\n"
+                    f"Проверьте ID и попробуйте снова."
+                )
+                return CHOOSING
+            
+            # Сохраняем данные в контексте
+            context.user_data['current_book_id'] = book_id
+            context.user_data['current_page'] = 1
+            
+            await self.show_book_page(update, context, book_page)
+            return READING
+            
+        except Exception as e:
+            print(f"[READ ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка начала чтения")
+            return CHOOSING
+    
+    async def show_book_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE, book_page: dict):
+        """Показать страницу книги."""
+        current_page = context.user_data.get('current_page', 1)
+        book_id = context.user_data.get('current_book_id')
+        
+        # Создаем клавиатуру для навигации
+        keyboard = []
+        
+        nav_buttons = []
+        if current_page > 1:
+            nav_buttons.append(KeyboardButton("⬅️ Назад"))
+        
+        nav_buttons.append(KeyboardButton("🔖 Сохранить"))
+        
+        if current_page < book_page['total_pages']:
+            nav_buttons.append(KeyboardButton("➡️ Вперед"))
+        
+        if nav_buttons:
+            keyboard.append(nav_buttons)
+        
+        keyboard.append([KeyboardButton("🏠 В меню")])
+        
+        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        
+        # Форматируем страницу
+        response = f"<b>{book_page['title']}</b>\n"
+        response += f"✍️ Автор: {book_page['author']}\n"
+        response += f"🏷️ Жанр: {book_page['genre']}\n"
+        response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
+        
+        # Если есть файл, показываем информацию
+        if book_page.get('has_file'):
+            file_ext = book_page.get('file_ext', '')
+            file_size = book_page.get('file_size', 0)
+            size_mb = file_size / (1024 * 1024) if file_size else 0
+            response += f"📁 Файл: {file_ext} ({size_mb:.1f} MB)\n"
+        
+        response += "\n"
+        
+        # Добавляем текст (ограничиваем длину)
+        text_content = book_page['content']
+        if len(text_content) > 1500:
+            text_content = text_content[:1500] + "..."
+        
+        # Безопасное отображение
+        text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
+        
+        response += f"<pre>{text_content}</pre>\n\n"
+        response += "Используйте кнопки для навигации"
+        
+        await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+    
+    async def handle_reading_navigation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка навигации при чтении."""
+        try:
+            user_id = update.effective_user.id
+            command = update.message.text
+            
+            book_id = context.user_data.get('current_book_id')
+            current_page = context.user_data.get('current_page', 1)
+            
+            if not book_id:
+                await update.message.reply_text("❌ Сессия потеряна. Начните заново.")
+                return await self.back_to_menu(update, context)
+            
+            # Обработка команды "В меню"
+            if command == "🏠 В меню":
+                context.user_data.clear()
+                await self.back_to_menu(update, context)
+                return CHOOSING
+            
+            # Обработка других команд
+            new_page = current_page
+            
+            if command == "⬅️ Назад" and current_page > 1:
+                new_page = current_page - 1
+            elif command == "➡️ Вперед":
+                new_page = current_page + 1
+            elif command == "🔖 Сохранить":
+                self.db.save_reading_progress(user_id, book_id, current_page)
+                await update.message.reply_text(f"✅ Прогресс сохранен! Страница {current_page}")
+            
+            # Если страница изменилась
+            if new_page != current_page:
+                book_page = self.db.get_book_content(book_id, new_page)
+                
+                if not book_page:
+                    await update.message.reply_text("❌ Страница не найдена")
+                    return READING
+                
+                current_page = new_page
+                context.user_data['current_page'] = current_page
+            
+            # Получаем страницу для отображения
+            book_page = self.db.get_book_content(book_id, current_page)
+            await self.show_book_page(update, context, book_page)
+            return READING
+            
+        except Exception as e:
+            print(f"[NAV ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка навигации")
+            return CHOOSING
+    
+    # ========== УДАЛЕНИЕ ==========
+    
+    async def delete_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начать удаление книги."""
+        try:
+            books = self.db.get_all_books()
+            books_with_content = self.db.get_books_with_content()
+            books_with_files = self.db.get_books_with_files()
+            
+            all_books = books + books_with_content + books_with_files
+            
+            if not all_books:
+                await update.message.reply_text("📭 Нет книг для удаления")
+                return CHOOSING
+            
+            response = "<b>🗑️ Выберите ID книги для удаления:</b>\n\n"
+            
+            # Группируем книги по типам
+            for i, book in enumerate(all_books[:10], 1):
+                book_type = "📝" if book.get('content') is None else "📖"
+                if book.get('file_ext'):
+                    book_type = "📄"
+                
+                response += f"{i}. {book_type} ID {book['id']}: {book['title'][:30]}...\n"
+            
+            response += "\n<b>Введите ID книги:</b>"
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+            return CONFIRM_DELETE
+            
+        except Exception as e:
+            print(f"[DELETE ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка загрузки списка книг")
+            return CHOOSING
+    
+    async def confirm_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подтверждение удаления книги."""
+        try:
+            book_id = int(update.message.text.strip())
+            success = self.db.delete_book(book_id)
+            
+            if success:
+                await update.message.reply_text("✅ Книга удалена!")
+            else:
+                await update.message.reply_text("❌ Книга не найдена")
+            
+            await self.back_to_menu(update, context)
+            return CHOOSING
+            
+        except ValueError:
+            await update.message.reply_text("❌ Введите числовой ID")
+            return CONFIRM_DELETE
+        except Exception as e:
+            print(f"[CONFIRM DELETE ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка при удалении")
+            return CHOOSING
+    
+    # ========== СТАТИСТИКА ==========
+    
+    async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статистику библиотеки."""
+        try:
+            books = self.db.get_all_books()
+            books_with_content = self.db.get_books_with_content()
+            books_with_files = self.db.get_books_with_files()
+            
+            total_books = len(books) + len(books_with_content) + len(books_with_files)
+            
+            # Подсчитываем общий размер файлов
+            total_size = 0
+            for book in books_with_files:
+                total_size += book.get('file_size', 0)
+            total_size_mb = total_size / (1024 * 1024)
+            
+            response = f"<b>📊 Статистика библиотеки</b>\n\n"
+            response += f"📚 Всего книг: {total_books}\n"
+            response += f"  📝 Для учета: {len(books)}\n"
+            response += f"  📖 С текстом: {len(books_with_content)}\n"
+            response += f"  📄 Из файлов: {len(books_with_files)}\n"
+            
+            if total_size > 0:
+                response += f"\n💾 Общий размер файлов: {total_size_mb:.1f} MB"
+            
+            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
+            
+        except Exception as e:
+            print(f"[STATS ERROR] {e}")
+            await update.message.reply_text("❌ Ошибка загрузки статистики")
+    
+    # ========== СКАЧИВАНИЕ ФАЙЛА ==========
     
     async def download_book_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Скачать файл книги."""
@@ -472,16 +779,45 @@ class BookBot:
             with open(file_path, 'rb') as file:
                 await update.message.reply_document(
                     document=file,
-                    filename=f"{book_info['title']}_{book_info['author']}{book_info['file_ext']}",
-                    caption=f"📥 <b>{book_info['title']}</b>\n✍️ {book_info['author']}"
+                    filename=f"{book_info['title']}_{book_info['author']}{book_info.get('file_ext', '')}",
+                    caption=f"📥 <b>{book_info['title']}</b>\n✍️ {book_info['author']}",
+                    parse_mode=ParseMode.HTML
                 )
                 
+        except ValueError:
+            await update.message.reply_text("❌ Введите числовой ID книги")
         except Exception as e:
             print(f"[DOWNLOAD ERROR] {e}")
             await update.message.reply_text("❌ Ошибка при скачивании файла")
     
-    # ... остальные методы остаются такими же (read_book_menu, handle_read_book, и т.д.)
-    # Просто добавьте обработчики для скачивания
+    # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
+    
+    async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Вернуться в главное меню."""
+        try:
+            keyboard = [
+                [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
+                [KeyboardButton(f"{EMOJI['plus']} Добавить книгу"), KeyboardButton(f"{EMOJI['read']} Читать")],
+                [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
+                [KeyboardButton(f"{EMOJI['help']} Помощь")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "🏠 Главное меню\n\nВыберите действие:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+            return CHOOSING
+        except Exception as e:
+            print(f"[BACK TO MENU ERROR] {e}")
+            return CHOOSING
+    
+    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отменить действие."""
+        await update.message.reply_text("❌ Действие отменено")
+        await self.back_to_menu(update, context)
+        return CHOOSING
     
     def setup(self):
         """Настройка обработчиков."""
@@ -517,7 +853,7 @@ class BookBot:
                 ],
                 UPLOADING_FILE: [
                     MessageHandler(filters.Document.ALL, self.handle_file_upload),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_type),  # Назад к выбору типа
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_type),
                 ],
                 PROCESSING_FILE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_file_book),
@@ -540,6 +876,13 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
+        print("=" * 50)
+        print("✅ BookBot запущен с поддержкой файлов!")
+        print("📚 Отправьте /start в Telegram")
+        print("📁 Теперь можно загружать книги файлами")
+        print("📥 Скачивание: /download <id>")
+        print("⏸️  Ctrl+C для остановки")
+        print("=" * 50)
         
         self.application.run_polling(
             drop_pending_updates=True,
