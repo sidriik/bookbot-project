@@ -37,6 +37,9 @@ EMOJI = {
     TYPING_BOOK_DETAILS, UPLOADING_FILE, PROCESSING_FILE
 ) = range(9)
 
+# Константы
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB максимум для Telegram
+
 class BookBot:
     def __init__(self, token: str):
         self.token = token
@@ -69,7 +72,7 @@ class BookBot:
             
             await update.message.reply_text(
                 "📚 Привет! Я BookBot - ваш персональный библиотекарь.\n"
-                "Теперь вы можете загружать книги файлами!",
+                f"Теперь вы можете загружать книги файлами до {MAX_FILE_SIZE // (1024*1024)} MB!",
                 parse_mode=ParseMode.HTML
             )
             
@@ -99,7 +102,8 @@ class BookBot:
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help."""
         try:
-            help_text = """<b>BookBot - помощь</b>
+            max_mb = MAX_FILE_SIZE // (1024 * 1024)
+            help_text = f"""<b>BookBot - помощь</b>
 
 <b>Основные команды:</b>
 /start - Главное меню
@@ -119,11 +123,11 @@ class BookBot:
    • <b>3</b> - Загрузить файл книги
 
 <b>Поддерживаемые форматы файлов:</b>
-• 📄 TXT - текстовые файлы
-• 📖 EPUB - электронные книги
-• 📕 FB2 - FictionBook
-• 📘 MOBI - Kindle
-• 📙 PDF - PDF документы
+• 📄 TXT - текстовые файлы (до {max_mb} MB)
+• 📖 EPUB - электронные книги (до {max_mb} MB)
+• 📕 FB2 - FictionBook (до {max_mb} MB)
+• 📘 MOBI - Kindle (до {max_mb} MB)
+• 📙 PDF - PDF документы (до {max_mb} MB)
 
 <b>Формат добавления вручную:</b>
 Название | Автор | Жанр
@@ -179,14 +183,17 @@ class BookBot:
             await update.message.reply_text("Ошибка поиска")
             return CHOOSING
     
+    # ========== ДОБАВЛЕНИЕ КНИГ ==========
+    
     async def add_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начать добавление книги."""
         try:
+            max_mb = MAX_FILE_SIZE // (1024 * 1024)
             await update.message.reply_text(
                 f"{EMOJI['plus']} <b>Выберите тип добавления:</b>\n\n"
                 "1. 📝 Книга для учета (без текста)\n"
                 "2. 📖 Книга с текстом (ввести текст)\n"
-                "3. 📄 Загрузить файл книги (TXT, EPUB, FB2, PDF)\n\n"
+                f"3. 📄 Загрузить файл книги (TXT, EPUB, FB2, PDF) - до {max_mb} MB\n\n"
                 "<b>Введите 1, 2 или 3:</b>",
                 parse_mode=ParseMode.HTML
             )
@@ -223,8 +230,9 @@ class BookBot:
                 return TYPING_BOOK_DETAILS
             
             elif text == "3":
+                max_mb = MAX_FILE_SIZE // (1024 * 1024)
                 await update.message.reply_text(
-                    f"{EMOJI['upload']} <b>Загрузите файл книги</b>\n\n"
+                    f"{EMOJI['upload']} <b>Загрузите файл книги (до {max_mb} MB)</b>\n\n"
                     "Поддерживаемые форматы:\n"
                     "• 📄 TXT - текстовые файлы\n"
                     "• 📖 EPUB - электронные книги\n"
@@ -254,9 +262,15 @@ class BookBot:
                 file_name = document.file_name
                 file_size = document.file_size
                 
-                # Проверяем размер файла (макс 20 MB)
-                if file_size > 20 * 1024 * 1024:
-                    await update.message.reply_text("❌ Файл слишком большой (макс 20 MB)")
+                # Проверяем размер файла
+                if file_size > MAX_FILE_SIZE:
+                    max_mb = MAX_FILE_SIZE // (1024 * 1024)
+                    current_mb = file_size / (1024 * 1024)
+                    await update.message.reply_text(
+                        f"❌ Файл слишком большой!\n"
+                        f"Максимум: {max_mb} MB\n"
+                        f"Ваш файл: {current_mb:.1f} MB"
+                    )
                     return UPLOADING_FILE
                 
                 # Проверяем расширение файла
@@ -265,7 +279,7 @@ class BookBot:
                 
                 if file_ext not in allowed_extensions:
                     await update.message.reply_text(
-                        f"❌ Неподдерживаемый формат файла.\n"
+                        f"❌ Неподдерживаемый формат файла: {file_ext}\n"
                         f"Допустимые форматы: {', '.join(allowed_extensions)}"
                     )
                     return UPLOADING_FILE
@@ -278,9 +292,11 @@ class BookBot:
                     'file_ext': file_ext
                 }
                 
+                file_size_mb = file_size / (1024 * 1024)
                 await update.message.reply_text(
                     f"✅ Файл получен: <b>{file_name}</b>\n"
-                    f"📊 Размер: {file_size / 1024:.1f} KB\n\n"
+                    f"📊 Размер: {file_size_mb:.1f} MB\n"
+                    f"📁 Формат: {file_ext}\n\n"
                     f"Теперь введите информацию о книге:\n"
                     f"<code>Название | Автор | Жанр</code>",
                     parse_mode=ParseMode.HTML
@@ -322,10 +338,18 @@ class BookBot:
             file = await context.bot.get_file(file_info['file_id'])
             
             # Создаем уникальное имя файла
-            file_path = self.books_folder / f"{title}_{author}_{file_info['file_name']}"
+            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            safe_author = "".join(c for c in author if c.isalnum() or c in (' ', '-', '_')).rstrip()
+            file_path = self.books_folder / f"{safe_title}_{safe_author}_{file_info['file_name']}"
             
             # Скачиваем файл
-            await file.download_to_drive(file_path)
+            try:
+                await file.download_to_drive(file_path)
+                print(f"[FILE] Файл сохранен: {file_path}")
+            except Exception as e:
+                print(f"[FILE ERROR] Ошибка сохранения файла: {e}")
+                await update.message.reply_text("❌ Ошибка при сохранении файла")
+                return PROCESSING_FILE
             
             # Читаем содержимое файла (для TXT файлов)
             content = ""
@@ -333,32 +357,44 @@ class BookBot:
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         content = f.read(50000)  # Читаем первые 50000 символов
-                except:
+                except UnicodeDecodeError:
                     try:
                         with open(file_path, 'r', encoding='cp1251') as f:
                             content = f.read(50000)
                     except:
                         content = f"[Файл {file_info['file_name']} загружен]"
+                except Exception as e:
+                    print(f"[TXT READ ERROR] {e}")
+                    content = f"[Файл {file_info['file_name']} загружен]"
             else:
                 content = f"[Файл {file_info['file_name']} в формате {file_info['file_ext']}]"
             
             # Добавляем книгу в базу
-            book_id = self.db.add_book_with_content(title, author, genre, content)
-            
-            # Сохраняем информацию о файле в базу
-            self.db.save_book_file_info(book_id, str(file_path), file_info['file_ext'], file_info['file_size'], file_info['file_name'])
-            
-            await update.message.reply_text(
-                f"✅ Книга из файла добавлена!\n\n"
-                f"📖 <b>{title}</b>\n"
-                f"✍️ Автор: {author}\n"
-                f"🏷️ Жанр: {genre}\n"
-                f"📄 Файл: {file_info['file_name']}\n"
-                f"📊 Формат: {file_info['file_ext']}\n"
-                f"💾 Размер: {file_info['file_size'] / 1024:.1f} KB\n"
-                f"🆔 ID: {book_id}",
-                parse_mode=ParseMode.HTML
-            )
+            try:
+                book_id = self.db.add_book_with_content(title, author, genre, content)
+                
+                # Сохраняем информацию о файле в базу
+                self.db.save_book_file_info(book_id, str(file_path), file_info['file_ext'], file_info['file_size'], file_info['file_name'])
+                
+                file_size_mb = file_info['file_size'] / (1024 * 1024)
+                
+                await update.message.reply_text(
+                    f"✅ Книга из файла добавлена!\n\n"
+                    f"📖 <b>{title}</b>\n"
+                    f"✍️ Автор: {author}\n"
+                    f"🏷️ Жанр: {genre}\n"
+                    f"📄 Файл: {file_info['file_name']}\n"
+                    f"📊 Формат: {file_info['file_ext']}\n"
+                    f"💾 Размер: {file_size_mb:.1f} MB\n"
+                    f"🆔 ID: {book_id}\n\n"
+                    f"Для скачивания: /download {book_id}",
+                    parse_mode=ParseMode.HTML
+                )
+                
+            except Exception as e:
+                print(f"[DB ERROR] Ошибка добавления книги: {e}")
+                await update.message.reply_text("❌ Ошибка при добавлении книги в базу данных")
+                return PROCESSING_FILE
             
             # Очищаем данные
             if 'uploaded_file' in context.user_data:
@@ -394,10 +430,11 @@ class BookBot:
                 
                 book_id = self.db.add_book(title, author, genre)
                 await update.message.reply_text(
-                    f"✅ Книга добавлена! ID: {book_id}\n"
+                    f"✅ Книга добавлена!\n"
                     f"📖 Название: {title}\n"
                     f"✍️ Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}"
+                    f"🏷️ Жанр: {genre}\n"
+                    f"🆔 ID: {book_id}"
                 )
                 
             else:  # with_content
@@ -440,6 +477,8 @@ class BookBot:
             await update.message.reply_text("❌ Ошибка добавления")
             return CHOOSING
     
+    # ========== СПИСОК КНИГ ==========
+    
     async def my_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать все книги."""
         try:
@@ -476,13 +515,13 @@ class BookBot:
                 for i, book in enumerate(books_with_files[:5], 1):
                     file_ext = book.get('file_ext', '?')
                     file_size = book.get('file_size', 0)
-                    size_kb = file_size / 1024 if file_size else 0
-                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {file_ext}, {size_kb:.1f} KB)\n"
+                    size_mb = file_size / (1024 * 1024) if file_size else 0
+                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {file_ext}, {size_mb:.1f} MB)\n"
                 if len(books_with_files) > 5:
                     response += f"... и еще {len(books_with_files) - 5}\n"
             
             response += f"\nДля чтения используйте {EMOJI['read']} Читать\n"
-            response += f"Для скачивания: /download ID_книги"
+            response += f"Для скачивания файлов: /download ID_книги"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             
@@ -496,17 +535,13 @@ class BookBot:
         """Меню выбора книги для чтения."""
         try:
             books_with_content = self.db.get_books_with_content()
-            books_with_files = self.db.get_books_with_files()
             
-            # Объединяем книги с текстом и из файлов
-            all_books = books_with_content + books_with_files
-            
-            if not all_books:
+            if not books_with_content:
                 await update.message.reply_text("📭 Нет книг для чтения. Добавьте книгу с текстом или файлом!")
                 return CHOOSING
             
             response = "<b>📖 Доступные книги для чтения:</b>\n\n"
-            for book in all_books[:10]:
+            for book in books_with_content[:10]:
                 content_len = len(book.get('content', ''))
                 pages = (content_len // 2000) + 1 if content_len > 0 else 0
                 file_ext = book.get('file_ext', '')
@@ -514,11 +549,11 @@ class BookBot:
                 response += f"ID {book['id']}: {book['title']}\n"
                 response += f"   Автор: {book['author']} | Жанр: {book.get('genre', '')}"
                 if file_ext:
-                    response += f" | Файл: {file_ext}"
-                response += f" | Страниц: {pages}\n\n"
+                    response += f" | 📁 {file_ext}"
+                response += f" | 📄 {pages} стр.\n\n"
             
-            if len(all_books) > 10:
-                response += f"\n📄 Показано 10 из {len(all_books)} книг"
+            if len(books_with_content) > 10:
+                response += f"\n📄 Показано 10 из {len(books_with_content)} книг"
             
             response += "\n<b>Введите ID книги для чтения:</b>"
             
@@ -596,9 +631,7 @@ class BookBot:
         # Если есть файл, показываем информацию
         if book_page.get('has_file'):
             file_ext = book_page.get('file_ext', '')
-            file_size = book_page.get('file_size', 0)
-            size_mb = file_size / (1024 * 1024) if file_size else 0
-            response += f"📁 Файл: {file_ext} ({size_mb:.1f} MB)\n"
+            response += f"📁 Файл: {file_ext}\n"
         
         response += "\n"
         
@@ -673,9 +706,8 @@ class BookBot:
         try:
             books = self.db.get_all_books()
             books_with_content = self.db.get_books_with_content()
-            books_with_files = self.db.get_books_with_files()
             
-            all_books = books + books_with_content + books_with_files
+            all_books = books + books_with_content
             
             if not all_books:
                 await update.message.reply_text("📭 Нет книг для удаления")
@@ -683,12 +715,8 @@ class BookBot:
             
             response = "<b>🗑️ Выберите ID книги для удаления:</b>\n\n"
             
-            # Группируем книги по типам
             for i, book in enumerate(all_books[:10], 1):
                 book_type = "📝" if book.get('content') is None else "📖"
-                if book.get('file_ext'):
-                    book_type = "📄"
-                
                 response += f"{i}. {book_type} ID {book['id']}: {book['title'][:30]}...\n"
             
             response += "\n<b>Введите ID книги:</b>"
@@ -731,7 +759,7 @@ class BookBot:
             books_with_content = self.db.get_books_with_content()
             books_with_files = self.db.get_books_with_files()
             
-            total_books = len(books) + len(books_with_content) + len(books_with_files)
+            total_books = len(books) + len(books_with_content)
             
             # Подсчитываем общий размер файлов
             total_size = 0
@@ -743,7 +771,9 @@ class BookBot:
             response += f"📚 Всего книг: {total_books}\n"
             response += f"  📝 Для учета: {len(books)}\n"
             response += f"  📖 С текстом: {len(books_with_content)}\n"
-            response += f"  📄 Из файлов: {len(books_with_files)}\n"
+            
+            if books_with_files:
+                response += f"  📄 Из файлов: {len(books_with_files)}\n"
             
             if total_size > 0:
                 response += f"\n💾 Общий размер файлов: {total_size_mb:.1f} MB"
@@ -779,7 +809,7 @@ class BookBot:
             with open(file_path, 'rb') as file:
                 await update.message.reply_document(
                     document=file,
-                    filename=f"{book_info['title']}_{book_info['author']}{book_info.get('file_ext', '')}",
+                    filename=book_info.get('original_filename', f"{book_info['title']}_{book_info['author']}{book_info.get('file_ext', '')}"),
                     caption=f"📥 <b>{book_info['title']}</b>\n✍️ {book_info['author']}",
                     parse_mode=ParseMode.HTML
                 )
@@ -876,6 +906,8 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
+        max_mb = MAX_FILE_SIZE // (1024 * 1024)
+
         
         self.application.run_polling(
             drop_pending_updates=True,
