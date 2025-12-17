@@ -760,3 +760,24 @@ class BookBot:
         self.application.add_handler(CommandHandler("add", self.add_book))
         self.application.add_handler(CommandHandler("delete", self.delete_book))
         self.application
+    def main():
+        """Главная функция."""
+        parser = argparse.ArgumentParser(description="Telegram BookBot")
+        parser.add_argument('--token', help='Токен бота')
+        
+        args = parser.parse_args()
+        
+        token = args.token or os.getenv('TELEGRAM_TOKEN')
+        
+        if not token:
+            print("❌ Ошибка: Укажите токен бота")
+            print("   python telegram_bot.py --token 'ВАШ_ТОКЕН'")
+            print("   или set TELEGRAM_TOKEN='ВАШ_ТОКЕН'")
+            sys.exit(1)
+        
+        bot = BookBot(token)
+        bot.run()
+
+# ⚠️ УБЕДИТЕСЬ ЧТО ЭТО ЕСТЬ В КОНЦЕ ФАЙЛА:
+if __name__ == "__main__":
+    main()
