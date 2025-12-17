@@ -61,7 +61,7 @@ class DatabaseManager:
         ''')
         
         self.conn.commit()
-        print("✅ Таблицы базы данных созданы/проверены")
+        print(" Таблицы базы данных созданы/проверены")
     
     def add_book(self, title: str, author: str, genre: str = None) -> int:
         """
