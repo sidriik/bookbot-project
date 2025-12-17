@@ -1,981 +1,430 @@
-# -*- coding: utf-8 -*-
-"""Основной модуль Telegram бота с поддержкой файлов."""
-
+#!/usr/bin/env python3
 import logging
-import argparse
-import sys
-import os
-from pathlib import Path
-
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, 
-    CommandHandler, 
-    MessageHandler, 
-    ContextTypes, 
-    ConversationHandler,
-    filters
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    ConversationHandler, filters, ContextTypes
 )
-from telegram.constants import ParseMode
+from database import db
+import html
+import re
 
-from database import DatabaseManager
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-# Словарь эмодзи
-EMOJI = {
-    "search": "🔍", "star": "⭐", "plus": "➕",
-    "list": "📋", "help": "❓", "home": "🏠", 
-    "book": "📚", "trash": "🗑️", "read": "📖",
-    "bookmark": "🔖", "prev": "⬅️", "next": "➡️", 
-    "info": "ℹ️", "file": "📄", "text": "📝",
-    "download": "📥", "upload": "📤"
-}
+# Состояния для ConversationHandler
+SELECTING_ACTION, ADDING_BOOK, RATING_BOOK, SEARCHING = range(4)
 
-# Состояния диалога
-(
-    CHOOSING, TYPING_SEARCH, TYPING_BOOK_INFO, 
-    CONFIRM_DELETE, TYPING_BOOK_ID, READING,
-    TYPING_BOOK_DETAILS, UPLOADING_FILE, PROCESSING_FILE
-) = range(9)
+# Команда /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start."""
+    user = update.effective_user
+    welcome_text = (
+        f"👋 Привет, {user.first_name}!\n\n"
+        "Я - BookBot, помогу тебе вести список книг.\n\n"
+        "Доступные команды:\n"
+        "/mybooks - Мои книги\n"
+        "/add - Добавить книгу\n"
+        "/search - Найти книгу\n"
+        "/stats - Статистика\n"
+        "/help - Помощь\n\n"
+        "Просто начни вводить название книги для поиска!"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📚 Мои книги", callback_data="mybooks")],
+        [InlineKeyboardButton("🔍 Поиск книг", callback_data="search")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="stats")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup)
+    return SELECTING_ACTION
 
-# Константы
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50 MB максимум для Telegram
-
-class BookBot:
-    def __init__(self, token: str):
-        self.token = token
-        self.application = None
-        
-        # Подключаем базу
-        try:
-            self.db = DatabaseManager('telegram_books.db')
-            print("[OK] База данных подключена")
-        except Exception as e:
-            print(f"[ERROR] Ошибка БД: {e}")
-            raise
-        
-        # Создаем папку для файлов
-        self.books_folder = Path("books_files")
-        self.books_folder.mkdir(exist_ok=True)
-        
-        # Настройка логирования
-        logging.basicConfig(
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            level=logging.WARNING
+# Команда /mybooks
+async def mybooks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает книги пользователя."""
+    user_id = update.effective_user.id
+    stats = db.get_user_stats(user_id)
+    
+    if stats['total'] == 0:
+        await update.message.reply_text(
+            "📭 У вас пока нет книг в коллекции.\n"
+            "Используйте /add чтобы добавить книгу."
         )
-        self.logger = logging.getLogger(__name__)
+        return
     
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /start."""
-        try:
-            user = update.effective_user
-            print(f"[START] от {user.id}")
-            
-            await update.message.reply_text(
-                "📚 Привет! Я BookBot - ваш персональный библиотекарь.\n"
-                f"Теперь вы можете загружать книги файлами до {MAX_FILE_SIZE // (1024*1024)} MB!",
-                parse_mode=ParseMode.HTML
-            )
-            
-            keyboard = [
-                [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-                [KeyboardButton(f"{EMOJI['plus']} Добавить книгу"), KeyboardButton(f"{EMOJI['read']} Читать")],
-                [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
-                [KeyboardButton(f"{EMOJI['help']} Помощь")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                "Выберите действие:",
-                reply_markup=reply_markup
-            )
-            
-            return CHOOSING
-            
-        except Exception as e:
-            print(f"[START ERROR] {e}")
-            try:
-                await update.message.reply_text("Ошибка. Попробуйте /start снова.")
-            except:
-                pass
-            return CHOOSING
+    # Получаем книги по статусам
+    books_by_status = {}
+    for status in ['planned', 'reading', 'completed', 'dropped']:
+        books = db.get_user_books(user_id, status)
+        if books:
+            books_by_status[status] = books
     
-    async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /help."""
-        try:
-            max_mb = MAX_FILE_SIZE // (1024 * 1024)
-            help_text = f"""<b>BookBot - помощь</b>
+    # Формируем сообщение
+    status_names = {
+        'planned': '📅 Запланировано',
+        'reading': '📖 Читаю сейчас',
+        'completed': '✅ Прочитано',
+        'dropped': '❌ Брошено'
+    }
+    
+    message_lines = [f"📚 Ваша библиотека ({stats['total']} книг):\n"]
+    
+    for status, books in books_by_status.items():
+        message_lines.append(f"\n{status_names[status]} ({len(books)}):")
+        for i, book in enumerate(books[:10], 1):  # Показываем первые 10
+            book_info = db.get_book_by_id(book['book_id'])
+            if book_info:
+                title = book_info.get('title', f"Книга #{book['book_id']}")
+                rating = f" ⭐ {book['rating']}" if book['rating'] else ""
+                message_lines.append(f"{i}. {title}{rating}")
+    
+    if stats['rated_count'] > 0:
+        message_lines.append(f"\n📊 Средний рейтинг: {stats['avg_rating']}")
+    
+    await update.message.reply_text("\n".join(message_lines))
 
-<b>Основные команды:</b>
-/start - Главное меню
-/search - Поиск книг
-/add - Добавить книгу
-/mybooks - Все книги
-/delete - Удалить книгу
-/read - Читать книги
-/stats - Статистика
-/download <id> - Скачать файл книги
-
-<b>Как добавить книгу:</b>
-1. Нажмите "➕ Добавить книгу"
-2. Выберите тип:
-   • <b>1</b> - Книга для учета (без текста)
-   • <b>2</b> - Книга с текстом
-   • <b>3</b> - Загрузить файл книги
-
-<b>Поддерживаемые форматы файлов:</b>
-• 📄 TXT - текстовые файлы (до {max_mb} MB)
-• 📖 EPUB - электронные книги (до {max_mb} MB)
-• 📕 FB2 - FictionBook (до {max_mb} MB)
-• 📘 MOBI - Kindle (до {max_mb} MB)
-• 📙 PDF - PDF документы (до {max_mb} MB)
-
-<b>Формат добавления вручную:</b>
-Название | Автор | Жанр
-или
-Название | Автор | Жанр | Текст книги
-
-<b>Пример:</b>
-<code>Война и мир | Толстой | Роман</code>"""
-            
-            await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
-            return CHOOSING
-        except Exception as e:
-            print(f"[HELP ERROR] {e}")
-            return CHOOSING
-    
-    # ========== ПОИСК ==========
-    
-    async def search_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начать поиск книг."""
-        try:
-            await update.message.reply_text(f"{EMOJI['search']} Введите запрос для поиска:")
-            return TYPING_SEARCH
-        except Exception as e:
-            print(f"[SEARCH ERROR] {e}")
-            return CHOOSING
-    
-    async def handle_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка поиска книг."""
-        try:
-            query = update.message.text.strip()
-            if not query:
-                await update.message.reply_text("Введите текст для поиска")
-                return TYPING_SEARCH
-            
-            results = self.db.search_books(query)
-            
-            if not results:
-                await update.message.reply_text(f"По запросу '{query}' ничего не найдено.")
-                return CHOOSING
-            
-            response = f"🔍 Найдено книг: {len(results)}\n\n"
-            for book in results[:5]:
-                response += f"<b>{book['title']}</b>\n"
-                response += f"Автор: {book['author']}\n"
-                response += f"Жанр: {book.get('genre', 'не указан')}\n"
-                response += f"ID: {book['id']}\n\n"
-            
-            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
-            return CHOOSING
-            
-        except Exception as e:
-            print(f"[HANDLE SEARCH ERROR] {e}")
-            await update.message.reply_text("Ошибка поиска")
-            return CHOOSING
-    
-    # ========== ДОБАВЛЕНИЕ КНИГ ==========
-    
-    async def add_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начать добавление книги."""
-        try:
-            max_mb = MAX_FILE_SIZE // (1024 * 1024)
-            await update.message.reply_text(
-                f"{EMOJI['plus']} <b>Выберите тип добавления:</b>\n\n"
-                "1. 📝 Книга для учета (без текста)\n"
-                "2. 📖 Книга с текстом (ввести текст)\n"
-                f"3. 📄 Загрузить файл книги (TXT, EPUB, FB2, PDF) - до {max_mb} MB\n\n"
-                "<b>Введите 1, 2 или 3:</b>",
-                parse_mode=ParseMode.HTML
-            )
-            return TYPING_BOOK_INFO
-        except Exception as e:
-            print(f"[ADD ERROR] {e}")
-            return CHOOSING
-    
-    async def handle_add_type(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка выбора типа книги."""
-        try:
-            text = update.message.text.strip()
-            
-            if text == "1":
-                await update.message.reply_text(
-                    f"{EMOJI['plus']} <b>Введите информацию о книге:</b>\n\n"
-                    "<code>Название | Автор | Жанр</code>\n\n"
-                    "<i>Пример:</i>\n"
-                    "<code>Война и мир | Толстой | Роман</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                context.user_data['add_type'] = 'simple'
-                return TYPING_BOOK_DETAILS
-            
-            elif text == "2":
-                await update.message.reply_text(
-                    f"{EMOJI['plus']} <b>Введите информацию о книге с текстом:</b>\n\n"
-                    "<code>Название | Автор | Жанр | Текст книги</code>\n\n"
-                    "<i>Пример:</i>\n"
-                    "<code>Гарри Поттер | Роулинг | Фэнтези | Текст первой главы...</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                context.user_data['add_type'] = 'with_content'
-                return TYPING_BOOK_DETAILS
-            
-            elif text == "3":
-                max_mb = MAX_FILE_SIZE // (1024 * 1024)
-                await update.message.reply_text(
-                    f"{EMOJI['upload']} <b>Загрузите файл книги (до {max_mb} MB)</b>\n\n"
-                    "Поддерживаемые форматы:\n"
-                    "• 📄 TXT - текстовые файлы\n"
-                    "• 📖 EPUB - электронные книги\n"
-                    "• 📕 FB2 - FictionBook\n"
-                    "• 📘 MOBI - Kindle\n"
-                    "• 📙 PDF - PDF документы\n\n"
-                    "После загрузки файла введите информацию о книге:\n"
-                    "<code>Название | Автор | Жанр</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                context.user_data['add_type'] = 'file'
-                return UPLOADING_FILE
-            
-            else:
-                await update.message.reply_text("❌ Введите 1, 2 или 3")
-                return TYPING_BOOK_INFO
-                
-        except Exception as e:
-            print(f"[HANDLE ADD TYPE ERROR] {e}")
-            return CHOOSING
-    
-    async def handle_file_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка загрузки файла."""
-        try:
-            if update.message.document:
-                document = update.message.document
-                file_name = document.file_name
-                file_size = document.file_size
-                
-                # Проверяем размер файла
-                if file_size > MAX_FILE_SIZE:
-                    max_mb = MAX_FILE_SIZE // (1024 * 1024)
-                    current_mb = file_size / (1024 * 1024)
-                    await update.message.reply_text(
-                        f"❌ Файл слишком большой!\n"
-                        f"Максимум: {max_mb} MB\n"
-                        f"Ваш файл: {current_mb:.1f} MB"
-                    )
-                    return UPLOADING_FILE
-                
-                # Проверяем расширение файла
-                allowed_extensions = ['.txt', '.epub', '.fb2', '.mobi', '.pdf', '.doc', '.docx', '.rtf']
-                file_ext = Path(file_name).suffix.lower()
-                
-                if file_ext not in allowed_extensions:
-                    await update.message.reply_text(
-                        f"❌ Неподдерживаемый формат файла: {file_ext}\n"
-                        f"Допустимые форматы: {', '.join(allowed_extensions)}"
-                    )
-                    return UPLOADING_FILE
-                
-                # Сохраняем информацию о файле
-                context.user_data['uploaded_file'] = {
-                    'file_id': document.file_id,
-                    'file_name': file_name,
-                    'file_size': file_size,
-                    'file_ext': file_ext
-                }
-                
-                file_size_mb = file_size / (1024 * 1024)
-                await update.message.reply_text(
-                    f"✅ Файл получен: <b>{file_name}</b>\n"
-                    f"📊 Размер: {file_size_mb:.1f} MB\n"
-                    f"📁 Формат: {file_ext}\n\n"
-                    f"Теперь введите информацию о книге:\n"
-                    f"<code>Название | Автор | Жанр</code>\n\n"
-                    f"<i>Например:</i>\n"
-                    f"<code>Зеленая лампа | А. Грин | Притча</code>",
-                    parse_mode=ParseMode.HTML
-                )
-                return PROCESSING_FILE
-                
-            else:
-                await update.message.reply_text("❌ Пожалуйста, загрузите файл книги")
-                return UPLOADING_FILE
-                
-        except Exception as e:
-            print(f"[FILE UPLOAD ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка при загрузке файла")
-            return UPLOADING_FILE
-    
-    async def process_file_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка информации о книге после загрузки файла."""
-        try:
-            text = update.message.text.strip()
-            
-            # Если пользователь нажал кнопку меню, отменяем добавление
-            if text in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
-                       f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
-                       f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
-                       f"{EMOJI['help']} Помощь", "🏠 В меню"]:
-                # Очищаем данные
-                if 'uploaded_file' in context.user_data:
-                    del context.user_data['uploaded_file']
-                if 'add_type' in context.user_data:
-                    del context.user_data['add_type']
-                
-                await update.message.reply_text("❌ Добавление книги отменено.")
-                await self.back_to_menu(update, context)
-                return CHOOSING
-            
-            # Проверяем формат
-            if "|" not in text or text.count("|") < 2:
-                await update.message.reply_text(
-                    "❌ Неверный формат. Используйте: Название | Автор | Жанр\n\n"
-                    "<i>Пример:</i>\n<code>Зеленая лампа | А. Грин | Притча</code>\n\n"
-                    "Или нажмите кнопку '🏠 В меню' для отмены",
-                    parse_mode=ParseMode.HTML
-                )
-                return PROCESSING_FILE
-            
-            parts = [x.strip() for x in text.split("|")]
-            if len(parts) < 3:
-                await update.message.reply_text("❌ Не хватает данных. Нужно: Название | Автор | Жанр")
-                return PROCESSING_FILE
-            
-            title, author, genre = parts[0], parts[1], parts[2]
-            
-            # Получаем информацию о файле
-            file_info = context.user_data.get('uploaded_file')
-            if not file_info:
-                await update.message.reply_text("❌ Файл не найден. Начните заново.")
-                return await self.back_to_menu(update, context)
-            
-            # Скачиваем файл
-            try:
-                file = await context.bot.get_file(file_info['file_id'])
-                
-                # Создаем безопасное имя файла
-                import re
-                safe_title = re.sub(r'[^\w\s\-]', '', title)
-                safe_author = re.sub(r'[^\w\s\-]', '', author)
-                file_name = f"{safe_title}_{safe_author}{file_info['file_ext']}"
-                file_path = self.books_folder / file_name
-                
-                # Скачиваем файл
-                await file.download_to_drive(file_path)
-                print(f"[FILE] Файл сохранен: {file_path}")
-                
-            except Exception as e:
-                print(f"[FILE ERROR] Ошибка сохранения файла: {e}")
-                await update.message.reply_text("❌ Ошибка при сохранении файла")
-                return PROCESSING_FILE
-            
-            # Читаем содержимое файла (для TXT файлов)
-            content = ""
-            if file_info['file_ext'] == '.txt':
-                try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read(50000)  # Читаем первые 50000 символов
-                except UnicodeDecodeError:
-                    try:
-                        with open(file_path, 'r', encoding='cp1251') as f:
-                            content = f.read(50000)
-                    except:
-                        content = f"[Файл {file_info['file_name']} загружен]"
-                except Exception as e:
-                    print(f"[TXT READ ERROR] {e}")
-                    content = f"[Файл {file_info['file_name']} загружен]"
-            else:
-                content = f"[Файл {file_info['file_name']} в формате {file_info['file_ext']}]"
-            
-            # Добавляем книгу в базу
-            try:
-                book_id = self.db.add_book_with_content(title, author, genre, content)
-                
-                # Сохраняем информацию о файле в базу
-                self.db.save_book_file_info(book_id, str(file_path), file_info['file_ext'], file_info['file_size'], file_info['file_name'])
-                
-                file_size_mb = file_info['file_size'] / (1024 * 1024)
-                
-                await update.message.reply_text(
-                    f"✅ Книга из файла добавлена!\n\n"
-                    f"📖 <b>{title}</b>\n"
-                    f"✍️ Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}\n"
-                    f"📄 Файл: {file_info['file_name']}\n"
-                    f"📊 Формат: {file_info['file_ext']}\n"
-                    f"💾 Размер: {file_size_mb:.1f} MB\n"
-                    f"🆔 ID: {book_id}\n\n"
-                    f"Для скачивания: /download {book_id}\n"
-                    f"Для чтения: {EMOJI['read']} Читать",
-                    parse_mode=ParseMode.HTML
-                )
-                
-            except Exception as e:
-                print(f"[DB ERROR] Ошибка добавления книги: {e}")
-                await update.message.reply_text("❌ Ошибка при добавлении книги в базу данных")
-                return PROCESSING_FILE
-            
-            # Очищаем данные
-            if 'uploaded_file' in context.user_data:
-                del context.user_data['uploaded_file']
-            if 'add_type' in context.user_data:
-                del context.user_data['add_type']
-            
-            await self.back_to_menu(update, context)
-            return CHOOSING
-            
-        except Exception as e:
-            print(f"[PROCESS FILE ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка при обработке файла")
-            return PROCESSING_FILE
-    
-    async def handle_add_book_details(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка деталей книги (для типов 1 и 2)."""
-        try:
-            text = update.message.text.strip()
-            add_type = context.user_data.get('add_type', 'simple')
-            
-            # Если пользователь нажал кнопку меню, отменяем
-            if text in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
-                       f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
-                       f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
-                       f"{EMOJI['help']} Помощь", "🏠 В меню"]:
-                if 'add_type' in context.user_data:
-                    del context.user_data['add_type']
-                await update.message.reply_text("❌ Добавление книги отменено.")
-                await self.back_to_menu(update, context)
-                return CHOOSING
-            
-            if add_type == 'simple':
-                if "|" not in text or text.count("|") != 2:
-                    await update.message.reply_text(
-                        "❌ Неверный формат. Используйте: Название | Автор | Жанр\n\n"
-                        "<i>Пример:</i>\n<code>Война и мир | Толстой | Роман</code>",
-                        parse_mode=ParseMode.HTML
-                    )
-                    return TYPING_BOOK_DETAILS
-                
-                parts = [x.strip() for x in text.split("|")]
-                title, author, genre = parts[0], parts[1], parts[2]
-                
-                book_id = self.db.add_book(title, author, genre)
-                await update.message.reply_text(
-                    f"✅ Книга добавлена!\n"
-                    f"📖 Название: {title}\n"
-                    f"✍️ Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}\n"
-                    f"🆔 ID: {book_id}"
-                )
-                
-            else:  # with_content
-                if "|" not in text or text.count("|") < 3:
-                    await update.message.reply_text(
-                        "❌ Неверный формат. Используйте: Название | Автор | Жанр | Текст книги\n\n"
-                        "<i>Пример:</i>\n<code>Книга | Автор | Жанр | Текст...</code>",
-                        parse_mode=ParseMode.HTML
-                    )
-                    return TYPING_BOOK_DETAILS
-                
-                parts = [x.strip() for x in text.split("|", 3)]
-                if len(parts) < 4:
-                    await update.message.reply_text("❌ Неверный формат")
-                    return TYPING_BOOK_DETAILS
-                
-                title, author, genre, content = parts[0], parts[1], parts[2], parts[3]
-                
-                book_id = self.db.add_book_with_content(title, author, genre, content)
-                pages = (len(content) // 2000) + 1
-                
-                await update.message.reply_text(
-                    f"✅ Книга с текстом добавлена!\n"
-                    f"📖 Название: {title}\n"
-                    f"✍️ Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}\n"
-                    f"📄 Страниц: {pages}\n"
-                    f"🆔 ID: {book_id}"
-                )
-            
-            # Очищаем данные и возвращаем в меню
-            if 'add_type' in context.user_data:
-                del context.user_data['add_type']
-            
-            await self.back_to_menu(update, context)
-            return CHOOSING
-            
-        except Exception as e:
-            print(f"[ADD DETAILS ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка добавления")
-            return CHOOSING
-    
-    # ========== СПИСОК КНИГ ==========
-    
-    async def my_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать все книги."""
-        try:
-            books = self.db.get_all_books()
-            books_with_content = self.db.get_books_with_content()
-            books_with_files = self.db.get_books_with_files()
-            
-            if not books and not books_with_content and not books_with_files:
-                await update.message.reply_text("📭 Библиотека пуста. Добавьте первую книгу!")
-                return
-            
-            response = "<b>📚 Ваша библиотека</b>\n\n"
-            
-            if books:
-                response += f"<b>📝 Книги для учета ({len(books)}):</b>\n"
-                for i, book in enumerate(books[:5], 1):
-                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']})\n"
-                if len(books) > 5:
-                    response += f"... и еще {len(books) - 5}\n"
-                response += "\n"
-            
-            if books_with_content:
-                response += f"<b>📖 Книги с текстом ({len(books_with_content)}):</b>\n"
-                for i, book in enumerate(books_with_content[:5], 1):
-                    content_len = len(book.get('content', ''))
-                    pages = (content_len // 2000) + 1 if content_len > 0 else 0
-                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {pages} стр.)\n"
-                if len(books_with_content) > 5:
-                    response += f"... и еще {len(books_with_content) - 5}\n"
-                response += "\n"
-            
-            if books_with_files:
-                response += f"<b>📄 Книги из файлов ({len(books_with_files)}):</b>\n"
-                for i, book in enumerate(books_with_files[:5], 1):
-                    file_ext = book.get('file_ext', '?')
-                    file_size = book.get('file_size', 0)
-                    size_mb = file_size / (1024 * 1024) if file_size else 0
-                    response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {file_ext}, {size_mb:.1f} MB)\n"
-                if len(books_with_files) > 5:
-                    response += f"... и еще {len(books_with_files) - 5}\n"
-            
-            response += f"\nДля чтения используйте {EMOJI['read']} Читать\n"
-            response += f"Для скачивания файлов: /download ID_книги"
-            
-            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
-            
-        except Exception as e:
-            print(f"[MYBOOKS ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка получения списка")
-    
-    # ========== ЧТЕНИЕ КНИГ ==========
-    
-    async def read_book_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Меню выбора книги для чтения."""
-        try:
-            books_with_content = self.db.get_books_with_content()
-            
-            if not books_with_content:
-                await update.message.reply_text("📭 Нет книг для чтения. Добавьте книгу с текстом или файлом!")
-                return CHOOSING
-            
-            response = "<b>📖 Доступные книги для чтения:</b>\n\n"
-            for book in books_with_content[:10]:
-                content_len = len(book.get('content', ''))
-                pages = (content_len // 2000) + 1 if content_len > 0 else 0
-                file_ext = book.get('file_ext', '')
-                
-                response += f"ID {book['id']}: {book['title']}\n"
-                response += f"   Автор: {book['author']} | Жанр: {book.get('genre', '')}"
-                if file_ext:
-                    response += f" | 📁 {file_ext}"
-                response += f" | 📄 {pages} стр.\n\n"
-            
-            if len(books_with_content) > 10:
-                response += f"\n📄 Показано 10 из {len(books_with_content)} книг"
-            
-            response += "\n<b>Введите ID книги для чтения:</b>"
-            
-            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
-            return TYPING_BOOK_ID
-            
-        except Exception as e:
-            print(f"[READ MENU ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка загрузки списка книг")
-            return CHOOSING
-    
-    async def handle_read_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка начала чтения книги."""
-        try:
-            user_input = update.message.text.strip()
-            
-            # Если нажата кнопка меню
-            if user_input in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
-                             f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
-                             f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
-                             f"{EMOJI['help']} Помощь", "🏠 В меню"]:
-                await self.back_to_menu(update, context)
-                return CHOOSING
-            
-            try:
-                book_id = int(user_input)
-            except ValueError:
-                await update.message.reply_text("❌ Введите числовой ID книги")
-                return TYPING_BOOK_ID
-            
-            # Получаем страницу книги
-            book_page = self.db.get_book_content(book_id, 1)
-            
-            if not book_page:
-                await update.message.reply_text(
-                    f"❌ Книга с ID {book_id} не найдена или не содержит текста.\n"
-                    f"Проверьте ID и попробуйте снова."
-                )
-                return CHOOSING
-            
-            # Сохраняем данные в контексте
-            context.user_data['current_book_id'] = book_id
-            context.user_data['current_page'] = 1
-            
-            await self.show_book_page(update, context, book_page)
-            return READING
-            
-        except Exception as e:
-            print(f"[READ ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка начала чтения")
-            return CHOOSING
-    
-    async def show_book_page(self, update: Update, context: ContextTypes.DEFAULT_TYPE, book_page: dict):
-        """Показать страницу книги."""
-        current_page = context.user_data.get('current_page', 1)
-        book_id = context.user_data.get('current_book_id')
-        
-        # Создаем клавиатуру для навигации
-        keyboard = []
-        
-        nav_buttons = []
-        if current_page > 1:
-            nav_buttons.append(KeyboardButton("⬅️ Назад"))
-        
-        nav_buttons.append(KeyboardButton("🔖 Сохранить"))
-        
-        if current_page < book_page['total_pages']:
-            nav_buttons.append(KeyboardButton("➡️ Вперед"))
-        
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        keyboard.append([KeyboardButton("🏠 В меню")])
-        
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        # Форматируем страницу
-        response = f"<b>{book_page['title']}</b>\n"
-        response += f"✍️ Автор: {book_page['author']}\n"
-        response += f"🏷️ Жанр: {book_page['genre']}\n"
-        response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
-        
-        # Если есть файл, показываем информацию
-        if book_page.get('has_file'):
-            file_ext = book_page.get('file_ext', '')
-            response += f"📁 Файл: {file_ext}\n"
-        
-        response += "\n"
-        
-        # Добавляем текст (ограничиваем длину)
-        text_content = book_page['content']
-        if len(text_content) > 1500:
-            text_content = text_content[:1500] + "..."
-        
-        # Безопасное отображение
-        text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
-        
-        response += f"<pre>{text_content}</pre>\n\n"
-        response += "Используйте кнопки для навигации"
-        
-        await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-    
-    async def handle_reading_navigation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка навигации при чтении."""
-        try:
-            user_id = update.effective_user.id
-            command = update.message.text
-            
-            book_id = context.user_data.get('current_book_id')
-            current_page = context.user_data.get('current_page', 1)
-            
-            if not book_id:
-                await update.message.reply_text("❌ Сессия потеряна. Начните заново.")
-                return await self.back_to_menu(update, context)
-            
-            # Обработка команды "В меню"
-            if command == "🏠 В меню":
-                context.user_data.clear()
-                await self.back_to_menu(update, context)
-                return CHOOSING
-            
-            # Обработка других команд
-            new_page = current_page
-            
-            if command == "⬅️ Назад" and current_page > 1:
-                new_page = current_page - 1
-            elif command == "➡️ Вперед":
-                new_page = current_page + 1
-            elif command == "🔖 Сохранить":
-                self.db.save_reading_progress(user_id, book_id, current_page)
-                await update.message.reply_text(f"✅ Прогресс сохранен! Страница {current_page}")
-            
-            # Если страница изменилась
-            if new_page != current_page:
-                book_page = self.db.get_book_content(book_id, new_page)
-                
-                if not book_page:
-                    await update.message.reply_text("❌ Страница не найдена")
-                    return READING
-                
-                current_page = new_page
-                context.user_data['current_page'] = current_page
-            
-            # Получаем страницу для отображения
-            book_page = self.db.get_book_content(book_id, current_page)
-            await self.show_book_page(update, context, book_page)
-            return READING
-            
-        except Exception as e:
-            print(f"[NAV ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка навигации")
-            return CHOOSING
-    
-    # ========== УДАЛЕНИЕ ==========
-    
-    async def delete_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Начать удаление книги."""
-        try:
-            books = self.db.get_all_books()
-            books_with_content = self.db.get_books_with_content()
-            
-            all_books = books + books_with_content
-            
-            if not all_books:
-                await update.message.reply_text("📭 Нет книг для удаления")
-                return CHOOSING
-            
-            response = "<b>🗑️ Выберите ID книги для удаления:</b>\n\n"
-            
-            for i, book in enumerate(all_books[:10], 1):
-                book_type = "📝" if book.get('content') is None else "📖"
-                response += f"{i}. {book_type} ID {book['id']}: {book['title'][:30]}...\n"
-            
-            response += "\n<b>Введите ID книги:</b>"
-            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
-            return CONFIRM_DELETE
-            
-        except Exception as e:
-            print(f"[DELETE ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка загрузки списка книг")
-            return CHOOSING
-    
-    async def confirm_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Подтверждение удаления книги."""
-        try:
-            book_id = int(update.message.text.strip())
-            success = self.db.delete_book(book_id)
-            
-            if success:
-                await update.message.reply_text("✅ Книга удалена!")
-            else:
-                await update.message.reply_text("❌ Книга не найдена")
-            
-            await self.back_to_menu(update, context)
-            return CHOOSING
-            
-        except ValueError:
-            await update.message.reply_text("❌ Введите числовой ID")
-            return CONFIRM_DELETE
-        except Exception as e:
-            print(f"[CONFIRM DELETE ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка при удалении")
-            return CHOOSING
-    
-    # ========== СТАТИСТИКА ==========
-    
-    async def show_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать статистику библиотеки."""
-        try:
-            books = self.db.get_all_books()
-            books_with_content = self.db.get_books_with_content()
-            books_with_files = self.db.get_books_with_files()
-            
-            total_books = len(books) + len(books_with_content)
-            
-            # Подсчитываем общий размер файлов
-            total_size = 0
-            for book in books_with_files:
-                total_size += book.get('file_size', 0)
-            total_size_mb = total_size / (1024 * 1024)
-            
-            response = f"<b>📊 Статистика библиотеки</b>\n\n"
-            response += f"📚 Всего книг: {total_books}\n"
-            response += f"  📝 Для учета: {len(books)}\n"
-            response += f"  📖 С текстом: {len(books_with_content)}\n"
-            
-            if books_with_files:
-                response += f"  📄 Из файлов: {len(books_with_files)}\n"
-            
-            if total_size > 0:
-                response += f"\n💾 Общий размер файлов: {total_size_mb:.1f} MB"
-            
-            await update.message.reply_text(response, parse_mode=ParseMode.HTML)
-            
-        except Exception as e:
-            print(f"[STATS ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка загрузки статистики")
-    
-    # ========== СКАЧИВАНИЕ ФАЙЛА ==========
-    
-    async def download_book_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Скачать файл книги."""
-        try:
-            if len(context.args) < 1:
-                await update.message.reply_text("❌ Укажите ID книги: /download <id>")
-                return
-            
-            book_id = int(context.args[0])
-            book_info = self.db.get_book_file_info(book_id)
-            
-            if not book_info or not book_info.get('file_path'):
-                await update.message.reply_text(f"❌ У книги ID {book_id} нет файла для скачивания")
-                return
-            
-            file_path = Path(book_info['file_path'])
-            if not file_path.exists():
-                await update.message.reply_text(f"❌ Файл книги не найден на сервере")
-                return
-            
-            # Отправляем файл пользователю
-            with open(file_path, 'rb') as file:
-                await update.message.reply_document(
-                    document=file,
-                    filename=book_info.get('original_filename', f"{book_info['title']}_{book_info['author']}{book_info.get('file_ext', '')}"),
-                    caption=f"📥 <b>{book_info['title']}</b>\n✍️ {book_info['author']}",
-                    parse_mode=ParseMode.HTML
-                )
-                
-        except ValueError:
-            await update.message.reply_text("❌ Введите числовой ID книги")
-        except Exception as e:
-            print(f"[DOWNLOAD ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка при скачивании файла")
-    
-    # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
-    
-    async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Вернуться в главное меню."""
-        try:
-            keyboard = [
-                [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-                [KeyboardButton(f"{EMOJI['plus']} Добавить книгу"), KeyboardButton(f"{EMOJI['read']} Читать")],
-                [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
-                [KeyboardButton(f"{EMOJI['help']} Помощь")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            await update.message.reply_text(
-                "🏠 Главное меню\n\nВыберите действие:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-            return CHOOSING
-        except Exception as e:
-            print(f"[BACK TO MENU ERROR] {e}")
-            return CHOOSING
-    
-    async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отменить действие."""
-        await update.message.reply_text("❌ Действие отменено")
-        await self.back_to_menu(update, context)
-        return CHOOSING
-    
-    def setup(self):
-        """Настройка обработчиков."""
-        self.application = Application.builder().token(self.token).build()
-        
-        conv_handler = ConversationHandler(
-            entry_points=[CommandHandler("start", self.start)],
-            states={
-                CHOOSING: [
-                    MessageHandler(filters.Regex(f"^{EMOJI['search']} Поиск$"), self.search_books),
-                    MessageHandler(filters.Regex(f"^{EMOJI['list']} Все книги$"), self.my_books),
-                    MessageHandler(filters.Regex(f"^{EMOJI['plus']} Добавить книгу$"), self.add_book),
-                    MessageHandler(filters.Regex(f"^{EMOJI['read']} Читать$"), self.read_book_menu),
-                    MessageHandler(filters.Regex(f"^{EMOJI['trash']} Удалить$"), self.delete_book),
-                    MessageHandler(filters.Regex(f"^{EMOJI['info']} Статистика$"), self.show_stats),
-                    MessageHandler(filters.Regex(f"^{EMOJI['help']} Помощь$"), self.help_cmd),
-                    CommandHandler("help", self.help_cmd),
-                    CommandHandler("mybooks", self.my_books),
-                    CommandHandler("stats", self.show_stats),
-                    CommandHandler("read", self.read_book_menu),
-                    CommandHandler("add", self.add_book),
-                    CommandHandler("delete", self.delete_book),
-                    CommandHandler("download", self.download_book_file),
-                ],
-                TYPING_SEARCH: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                TYPING_BOOK_INFO: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_type),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                TYPING_BOOK_DETAILS: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_book_details),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                UPLOADING_FILE: [
-                    MessageHandler(filters.Document.ALL, self.handle_file_upload),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                PROCESSING_FILE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_file_book),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                TYPING_BOOK_ID: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_read_book),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-                READING: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_reading_navigation),
-                ],
-                CONFIRM_DELETE: [
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.confirm_delete),
-                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
-                ],
-            },
-            fallbacks=[CommandHandler("cancel", self.cancel)],
+# Команда /add
+async def add_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавляет книгу."""
+    if not context.args:
+        await update.message.reply_text(
+            "📝 Использование: /add <id_книги> [статус]\n"
+            "Статусы: planned, reading, completed, dropped\n"
+            "Пример: /add 123 reading"
         )
-        
-        self.application.add_handler(conv_handler)
+        return
     
-    def run(self):
-        """Запуск бота."""
-        self.setup()
-        max_mb = MAX_FILE_SIZE // (1024 * 1024)
+    try:
+        user_id = update.effective_user.id
+        book_id = int(context.args[0])
+        status = context.args[1] if len(context.args) > 1 else "planned"
         
-        self.application.run_polling(
-            drop_pending_updates=True,
-            allowed_updates=['message', 'callback_query', 'document']
+        if status not in ['planned', 'reading', 'completed', 'dropped']:
+            await update.message.reply_text(
+                "❌ Неверный статус. Используйте: planned, reading, completed, dropped"
+            )
+            return
+        
+        # Проверяем, есть ли книга в базе
+        book_info = db.get_book_by_id(book_id)
+        if not book_info:
+            await update.message.reply_text(
+                f"❌ Книга с ID {book_id} не найдена в каталоге.\n"
+                "Сначала найдите книгу через /search"
+            )
+            return
+        
+        # Добавляем книгу
+        if db.add_user_book(user_id, book_id, status):
+            status_texts = {
+                'planned': 'запланирована',
+                'reading': 'добавлена в читаю',
+                'completed': 'отмечена как прочитанная',
+                'dropped': 'отмечена как брошенная'
+            }
+            await update.message.reply_text(
+                f"✅ Книга '{book_info['title']}' {status_texts[status]}!"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось добавить книгу.")
+    
+    except ValueError:
+        await update.message.reply_text("❌ ID книги должен быть числом.")
+    except Exception as e:
+        logger.error(f"Error adding book: {e}")
+        await update.message.reply_text("❌ Произошла ошибка.")
+
+# Команда /search
+async def search_books(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Поиск книг."""
+    if not context.args:
+        await update.message.reply_text(
+            "🔍 Использование: /search <название или автор>\n"
+            "Пример: /search Гарри Поттер"
+        )
+        return
+    
+    query = " ".join(context.args)
+    books = db.search_books(query)
+    
+    if not books:
+        await update.message.reply_text(f"📭 По запросу '{query}' ничего не найдено.")
+        return
+    
+    # Формируем список книг
+    message_lines = [f"📚 Найдено книг: {len(books)}\n"]
+    
+    for i, book in enumerate(books[:15], 1):  # Показываем первые 15
+        genre = f" ({book['genre']})" if book.get('genre') else ""
+        message_lines.append(
+            f"{i}. {book['title']} - {book['author']}{genre}\n"
+            f"   ID: {book['id']}"
+        )
+    
+    message = "\n".join(message_lines)
+    
+    # Если сообщение слишком длинное, разбиваем на части
+    if len(message) > 4000:
+        parts = []
+        current_part = []
+        current_length = 0
+        
+        for line in message_lines:
+            if current_length + len(line) + 1 > 4000:
+                parts.append("\n".join(current_part))
+                current_part = [line]
+                current_length = len(line) + 1
+            else:
+                current_part.append(line)
+                current_length += len(line) + 1
+        
+        if current_part:
+            parts.append("\n".join(current_part))
+        
+        for part in parts:
+            await update.message.reply_text(part)
+    else:
+        await update.message.reply_text(message)
+
+# Команда /stats
+async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статистику."""
+    user_id = update.effective_user.id
+    stats = db.get_user_stats(user_id)
+    
+    message = (
+        f"📊 Ваша статистика чтения:\n\n"
+        f"📚 Всего книг: {stats['total']}\n"
+        f"📅 Запланировано: {stats['planned']}\n"
+        f"📖 Читаю сейчас: {stats['reading']}\n"
+        f"✅ Прочитано: {stats['completed']}\n"
+        f"❌ Брошено: {stats['dropped']}\n"
+    )
+    
+    if stats['rated_count'] > 0:
+        message += f"\n⭐ Оценено книг: {stats['rated_count']}\n"
+        message += f"📈 Средний рейтинг: {stats['avg_rating']}"
+    
+    await update.message.reply_text(message)
+
+# Команда /rate
+async def rate_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Оценивает книгу."""
+    if not context.args:
+        await update.message.reply_text(
+            "⭐ Использование: /rate <id_книги> <оценка_1-5>\n"
+            "Пример: /rate 123 5"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        book_id = int(context.args[0])
+        rating = int(context.args[1])
+        
+        if rating < 1 or rating > 5:
+            await update.message.reply_text("❌ Оценка должна быть от 1 до 5.")
+            return
+        
+        # Проверяем, есть ли книга у пользователя
+        if not db.has_book(user_id, book_id):
+            await update.message.reply_text(
+                "❌ У вас нет этой книги в коллекции.\n"
+                "Сначала добавьте книгу через /add"
+            )
+            return
+        
+        # Ставим оценку
+        if db.rate_book(user_id, book_id, rating):
+            book_info = db.get_book_by_id(book_id)
+            title = book_info['title'] if book_info else f"Книга #{book_id}"
+            await update.message.reply_text(f"✅ Вы поставили {rating}⭐ книге '{title}'")
+        else:
+            await update.message.reply_text("❌ Не удалось поставить оценку.")
+    
+    except ValueError:
+        await update.message.reply_text("❌ ID книги и оценка должны быть числами.")
+    except Exception as e:
+        logger.error(f"Error rating book: {e}")
+        await update.message.reply_text("❌ Произошла ошибка.")
+
+# Команда /remove
+async def remove_book(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет книгу из коллекции."""
+    if not context.args:
+        await update.message.reply_text(
+            "🗑️ Использование: /remove <id_книги>\n"
+            "Пример: /remove 123"
+        )
+        return
+    
+    try:
+        user_id = update.effective_user.id
+        book_id = int(context.args[0])
+        
+        if db.remove_user_book(user_id, book_id):
+            await update.message.reply_text(f"✅ Книга удалена из вашей коллекции.")
+        else:
+            await update.message.reply_text("❌ Книга не найдена в вашей коллекции.")
+    
+    except ValueError:
+        await update.message.reply_text("❌ ID книги должен быть числом.")
+    except Exception as e:
+        logger.error(f"Error removing book: {e}")
+        await update.message.reply_text("❌ Произошла ошибка.")
+
+# Команда /help
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает помощь."""
+    help_text = (
+        "📚 *BookBot - помощник для учета книг*\n\n"
+        "*Основные команды:*\n"
+        "/start - Начать работу с ботом\n"
+        "/mybooks - Показать мои книги\n"
+        "/add <id> [статус] - Добавить книгу\n"
+        "/search <запрос> - Найти книгу\n"
+        "/rate <id> <1-5> - Оценить книгу\n"
+        "/remove <id> - Удалить книгу\n"
+        "/stats - Показать статистику\n"
+        "/help - Эта справка\n\n"
+        "*Статусы книг:*\n"
+        "• planned - Запланировано\n"
+        "• reading - Читаю сейчас\n"
+        "• completed - Прочитано\n"
+        "• dropped - Брошено\n\n"
+        "Просто напишите название книги для поиска!"
+    )
+    
+    await update.message.reply_text(help_text, parse_mode='Markdown')
+
+# Обработчик инлайн-кнопок
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатий на инлайн-кнопки."""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = update.effective_user.id
+    
+    if query.data == "mybooks":
+        stats = db.get_user_stats(user_id)
+        if stats['total'] == 0:
+            await query.edit_message_text(
+                "📭 У вас пока нет книг в коллекции.\n"
+                "Используйте /add чтобы добавить книгу."
+            )
+        else:
+            # Упрощенный показ книг
+            await query.edit_message_text(
+                f"📚 В вашей коллекции {stats['total']} книг.\n"
+                f"✅ Прочитано: {stats['completed']}\n"
+                f"📖 Читаю сейчас: {stats['reading']}\n\n"
+                "Используйте /mybooks для подробного списка."
+            )
+    
+    elif query.data == "search":
+        await query.edit_message_text(
+            "🔍 Для поиска книг используйте команду /search\n"
+            "Пример: /search Гарри Поттер\n\n"
+            "Или просто напишите название книги:"
+        )
+    
+    elif query.data == "stats":
+        stats = db.get_user_stats(user_id)
+        await query.edit_message_text(
+            f"📊 Ваша статистика:\n\n"
+            f"📚 Всего книг: {stats['total']}\n"
+            f"📅 Запланировано: {stats['planned']}\n"
+            f"📖 Читаю сейчас: {stats['reading']}\n"
+            f"✅ Прочитано: {stats['completed']}\n"
+            f"❌ Брошено: {stats['dropped']}"
         )
 
+# Обработчик текстовых сообщений (для поиска)
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений для поиска книг."""
+    text = update.message.text.strip()
+    
+    if len(text) < 2:
+        return
+    
+    # Если сообщение похоже на поисковый запрос
+    books = db.search_books(text)
+    
+    if not books:
+        await update.message.reply_text(
+            f"📭 По запросу '{text}' ничего не найдено.\n"
+            "Попробуйте другой запрос или используйте /search <запрос>"
+        )
+        return
+    
+    # Показываем первые 5 результатов
+    message_lines = [f"🔍 Результаты поиска по '{text}':\n"]
+    
+    for i, book in enumerate(books[:5], 1):
+        message_lines.append(f"{i}. {book['title']} - {book['author']}")
+        message_lines.append(f"   ID: {book['id']}\n")
+    
+    message_lines.append("Чтобы добавить книгу, используйте /add <id>")
+    
+    await update.message.reply_text("\n".join(message_lines))
 
+# Обработчик ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок."""
+    logger.error(f"Update {update} caused error {context.error}")
+    
+    try:
+        error_msg = str(context.error)
+        if "Timed out" in error_msg:
+            await update.message.reply_text(
+                "⏰ Операция заняла слишком много времени. Попробуйте еще раз."
+            )
+        elif "UNION" in error_msg:
+            await update.message.reply_text(
+                "❌ Ошибка в базе данных. Попробуйте позже."
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Произошла ошибка. Попробуйте еще раз или обратитесь к разработчику."
+            )
+    except:
+        pass
+
+# Главная функция
 def main():
-    parser = argparse.ArgumentParser(description="BookBot с поддержкой файлов")
-    parser.add_argument('--token', help='Токен бота', required=True)
+    """Запуск бота."""
+    # Токен вашего бота
+    TOKEN = "8443150665:AAGT7hc5gi8JP8MFUmaQQDNhru6VkKc5aj4"
     
-    args = parser.parse_args()
-    token = args.token
+    # Создаем приложение
+    application = Application.builder().token(TOKEN).build()
     
-    bot = BookBot(token)
-    bot.run()
+    # Добавляем обработчики команд
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("mybooks", mybooks))
+    application.add_handler(CommandHandler("add", add_book))
+    application.add_handler(CommandHandler("search", search_books))
+    application.add_handler(CommandHandler("stats", show_stats))
+    application.add_handler(CommandHandler("rate", rate_book))
+    application.add_handler(CommandHandler("remove", remove_book))
+    application.add_handler(CommandHandler("help", help_command))
+    
+    # Обработчик инлайн-кнопок
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
+    # Обработчик текстовых сообщений
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    
+    # Обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

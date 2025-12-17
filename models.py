@@ -1,313 +1,207 @@
-class User:
-    """
-    Manages user's book collection with reading status and rating tracking.
+import sqlite3
+from contextlib import contextmanager
+from database import db, Database
+@contextmanager
+def get_db_connection():
+    """Контекстный менеджер для подключения к БД."""
+    conn = sqlite3.connect('telegram_books.db', check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    finally:
+        conn.close()
 
-    Attributes:
-        user (dict): Dictionary storing user data: {user_id: {book_id: {'status': str, 'rating': int|None}}}
-    """
-
+class Database:
+    """Класс для работы с базой данных."""
+    
     def __init__(self):
-        """
-        Initializes a new User with an empty dictionary.
-        """
-        self.user = {}
-
-    def add_book(self, user_id, book_id, status):
-        """
-        Adds a book to a user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            book_id (int): The unique identifier of the book
-            status (str): The reading status of the book: "planned", "reading", "completed", "dropped".
-
-        Returns:
-            bool: True if the book was successfully added, False if the book already exists.
-
-        Raises:
-            ValueError: If invalid status.
-        """
+        self.init_database()
+    
+    def init_database(self):
+        """Инициализация таблиц базы данных."""
+        with get_db_connection() as conn:
+            # Таблица пользователей и их книг
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS user_books (
+                    user_id INTEGER,
+                    book_id INTEGER,
+                    status TEXT CHECK(status IN ('planned', 'reading', 'completed', 'dropped')),
+                    rating INTEGER CHECK(rating >= 1 AND rating <= 5),
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, book_id)
+                )
+            ''')
+            
+            # Таблица книг (если нужно хранить информацию о книгах)
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS books (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    genre TEXT,
+                    description TEXT
+                )
+            ''')
+            conn.commit()
+    
+    def add_user_book(self, user_id, book_id, status):
+        """Добавляет книгу в коллекцию пользователя."""
         try:
-            allowed_status = ["planned", "reading", "completed", "dropped"]
-            if status not in allowed_status:
-                raise ValueError
-            if user_id not in self.user:
-                self.user[user_id] = {}
-            if book_id in self.user[user_id]:
-                return False
-            self.user[user_id][book_id] = {
-                'status': status, 'rating': None}
-            return True
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'INSERT OR REPLACE INTO user_books (user_id, book_id, status) VALUES (?, ?, ?)',
+                    (user_id, book_id, status)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
         except Exception as e:
-            print(f"Error in add_book: {e}")
+            print(f"Error adding book: {e}")
             return False
-
+    
+    def update_book_status(self, user_id, book_id, status):
+        """Обновляет статус книги."""
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'UPDATE user_books SET status = ? WHERE user_id = ? AND book_id = ?',
+                    (status, user_id, book_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
+        except Exception as e:
+            print(f"Error updating status: {e}")
+            return False
+    
     def rate_book(self, user_id, book_id, rating):
-        """
-        Rates a book in the user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            book_id (int): The unique identifier of the book.
-            rating (int): The rating value (1-5).
-
-        Returns:
-            bool: True if the rating was successfully added, False if user or book not found.
-
-        Raises:
-            ValueError: If the rating is not between 1 and 5.
-        """
+        """Оценивает книгу."""
         try:
-            if rating < 1 or rating > 5:
-                raise ValueError
-            if user_id not in self.user:
-                return False
-            if book_id not in self.user[user_id]:
-                return False
-            self.user[user_id][book_id]['rating'] = rating
-            return True
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'UPDATE user_books SET rating = ? WHERE user_id = ? AND book_id = ?',
+                    (rating, user_id, book_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
         except Exception as e:
-            print(f"Error in rate_book: {e}")
+            print(f"Error rating book: {e}")
             return False
-
-    def get_users_book(self, user_id):
-        """
-        Gets all books from a user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            list: List of dictionaries with book info: [{'book_id': int, 'status': str, 'rating': int|None}, ...]
-                  Returns empty list if user has no books.
-        """
+    
+    def remove_user_book(self, user_id, book_id):
+        """Удаляет книгу из коллекции пользователя."""
         try:
-            if user_id not in self.user:
-                return []
-            books = []
-            for book_id, book_data in self.user[user_id].items():
-                books.append({
-                    'book_id': book_id,
-                    'status': book_data['status'],
-                    'rating': book_data['rating']
-                })
-            return books
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'DELETE FROM user_books WHERE user_id = ? AND book_id = ?',
+                    (user_id, book_id)
+                )
+                conn.commit()
+                return cursor.rowcount > 0
         except Exception as e:
-            print(f"Error in get_users_book: {e}")
+            print(f"Error removing book: {e}")
+            return False
+    
+    def get_user_books(self, user_id, status=None):
+        """Получает книги пользователя."""
+        try:
+            with get_db_connection() as conn:
+                if status:
+                    cursor = conn.execute(
+                        'SELECT book_id, status, rating FROM user_books WHERE user_id = ? AND status = ?',
+                        (user_id, status)
+                    )
+                else:
+                    cursor = conn.execute(
+                        'SELECT book_id, status, rating FROM user_books WHERE user_id = ?',
+                        (user_id,)
+                    )
+                return [dict(row) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"Error getting user books: {e}")
             return []
-
-    def remove_book(self, user_id, book_id):
-        """
-        Removes a book from the user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            book_id (int): The unique identifier of the book to remove.
-
-        Returns:
-            bool: True if the book was successfully removed, False if user or book not found.
-        """
-
+    
+    def get_user_stats(self, user_id):
+        """Получает статистику пользователя."""
         try:
-            if user_id not in self.user:
-                return False
-            if book_id not in self.user[user_id]:
-                return False
-            del self.user[user_id][book_id]
-            if len(self.user[user_id]) == 0:
-                del self.user[user_id]
-            return True
+            with get_db_connection() as conn:
+                cursor = conn.execute('''
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status = 'planned' THEN 1 ELSE 0 END) as planned,
+                        SUM(CASE WHEN status = 'reading' THEN 1 ELSE 0 END) as reading,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                        SUM(CASE WHEN status = 'dropped' THEN 1 ELSE 0 END) as dropped,
+                        AVG(rating) as avg_rating,
+                        COUNT(rating) as rated_count
+                    FROM user_books 
+                    WHERE user_id = ?
+                ''', (user_id,))
+                
+                result = cursor.fetchone()
+                if result:
+                    return {
+                        'total': result['total'] or 0,
+                        'planned': result['planned'] or 0,
+                        'reading': result['reading'] or 0,
+                        'completed': result['completed'] or 0,
+                        'dropped': result['dropped'] or 0,
+                        'avg_rating': round(result['avg_rating'] or 0, 2),
+                        'rated_count': result['rated_count'] or 0
+                    }
+                return {
+                    'total': 0, 'planned': 0, 'reading': 0,
+                    'completed': 0, 'dropped': 0, 'avg_rating': 0.0,
+                    'rated_count': 0
+                }
         except Exception as e:
-            print(f"Error in remove_book: {e}")
-            return False
-
-    def get_books_by_status(self, user_id, status):
-        """
-        Gets books by specific status.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            status (str): The reading status to filter by.
-
-        Returns:
-            list: List of books with specified status: [{'book_id': int,'status': str, 'rating': int|None}, ...]
-                  Returns empty list if no books match the status.
-        """
-        try:
-            if user_id not in self.user:
-                return []
-            books = []
-            for book_id, data in self.user[user_id].items():
-                if data['status'] == status:
-                    books.append({
-                        'book_id': book_id,
-                        'status': data['status'],
-                        'rating': data['rating']
-                    })
-            return books
-        except Exception as e:
-            print(f"Error in get_books_by_status: {e}")
-            return []
-
-    def get_status(self, user_id):
-        """
-        Gets reading statistics.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            dict: Statistics: {'total': int, 'planned': int, 'reading': int, 'completed': int, 'dropped': int}
-                  All values are 0 if user has no books.
-        """
-        try:
-            stats = {'total': 0, 'planned': 0, 'reading': 0,
-                     'completed': 0, 'dropped': 0}
-            if user_id not in self.user:
-                return stats
-            users_books = self.user[user_id]
-            stats['total'] = len(users_books)
-            for book_data in users_books.values():
-                status = book_data['status']
-                if status in stats:
-                    stats[status] += 1
-            return stats
-        except Exception as e:
-            print(f"Error in get_status: {e}")
-            return {'total': 0, 'planned': 0, 'reading': 0,
-                    'completed': 0, 'dropped': 0}
-
-    def get_new_status(self, user_id, book_id, new_status):
-        """
-        Updates book's reading status.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            book_id (int): The unique identifier of the book.
-            new_status (str): The new reading status: "planned", "reading", "completed", "dropped".
-
-        Returns:
-            bool: True if status was successfully updated, False if invalid status, user, or book not found.
-
-        Raises:
-            ValueError: If invalid status.
-        """
-        try:
-            allowed_status = ["planned", "reading", "completed", "dropped"]
-            if new_status not in allowed_status:
-                raise ValueError
-            if user_id not in self.user:
-                return False
-            if book_id not in self.user[user_id]:
-                return False
-            self.user[user_id][book_id]['status'] = new_status
-            return True
-        except Exception as e:
-            print(f"Error in det_new_status: {e}")
-            return False
-
-    def get_average_rating(self, user_id):
-        """
-        Calculates average rating of rated books.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            float: Average rating (2 decimal places).
-                   Returns 0.0 if user has no books or no rated books.
-        """
-        try:
-            if user_id not in self.user:
-                return 0.0
-            total = 0
-            cnt = 0
-            for book_data in self.user[user_id].values():
-                rating = book_data.get('rating')
-                if rating is not None:
-                    total += rating
-                    cnt += 1
-            if cnt == 0:
-                return 0.0
-            return round(total / cnt, 2)
-        except Exception as e:
-            print(f"Error in get_average_rating: {e}")
-            return 0.0
-
+            print(f"Error getting stats: {e}")
+            return {
+                'total': 0, 'planned': 0, 'reading': 0,
+                'completed': 0, 'dropped': 0, 'avg_rating': 0.0,
+                'rated_count': 0
+            }
+    
     def has_book(self, user_id, book_id):
-        """
-        Checks if user has specific book.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-            book_id (int): The unique identifier of the book to check.
-
-        Returns:
-            bool: True if the book exists in the user's collection, False otherwise.
-        """
+        """Проверяет, есть ли книга у пользователя."""
         try:
-            if user_id not in self.user:
-                return False
-            return book_id in self.user[user_id]
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'SELECT 1 FROM user_books WHERE user_id = ? AND book_id = ?',
+                    (user_id, book_id)
+                )
+                return cursor.fetchone() is not None
         except Exception as e:
-            print(f"Error in has_book: {e}")
+            print(f"Error checking book: {e}")
             return False
-
-    def clear_user_books(self, user_id):
-        """
-        Removes all books from a user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            bool: True if the user's books were cleared, False if user not found.
-        """
+    
+    def search_books(self, query):
+        """Ищет книги по названию или автору."""
         try:
-            if user_id in self.user:
-                del self.user[user_id]
-                return True
-            return False
+            with get_db_connection() as conn:
+                search_term = f"%{query}%"
+                cursor = conn.execute('''
+                    SELECT id, title, author, genre, description 
+                    FROM books 
+                    WHERE title LIKE ? OR author LIKE ? 
+                    LIMIT 20
+                ''', (search_term, search_term))
+                return [dict(row) for row in cursor.fetchall()]
         except Exception as e:
-            print(f"Error in clear_user_books: {e}")
-            return False
-
-    def get_user_book_count(self, user_id):
-        """
-        Gets the total number of books in a user's collection.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            int: The number of books in the user's collection. Returns 0 if user has no books.
-        """
+            print(f"Error searching books: {e}")
+            return []
+    
+    def get_book_by_id(self, book_id):
+        """Получает книгу по ID."""
         try:
-            if user_id not in self.user:
-                return 0
-            return len(self.user[user_id])
+            with get_db_connection() as conn:
+                cursor = conn.execute(
+                    'SELECT id, title, author, genre, description FROM books WHERE id = ?',
+                    (book_id,)
+                )
+                result = cursor.fetchone()
+                return dict(result) if result else None
         except Exception as e:
-            print(f"Error in get_user_book_count: {e}")
-            return 0
+            print(f"Error getting book: {e}")
+            return None
 
-    def count_rated_books(self, user_id):
-        """
-        Counts rated books.
-
-        Args:
-            user_id (int): The unique identifier of the user.
-
-        Returns:
-            int: The number of rated books. Returns 0 if user has no books or no ratings.
-        """
-        try:
-            if user_id not in self.user:
-                return 0
-            count = 0
-            for data in self.user[user_id].values():
-                if data['rating'] is not None:
-                    count += 1
-            return count
-        except Exception as e:
-            print(f"Error in count_rated_books: {e}")
-            return 0
+# Создаем глобальный экземпляр базы данных
+db = Database()
