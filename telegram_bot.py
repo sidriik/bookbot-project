@@ -713,7 +713,7 @@ class BookBot:
         )
         await self.back_to_menu(update, context)
     
-       def setup(self):
+    def setup(self):
         """Настройка обработчиков."""
         self.application = Application.builder().token(self.token).build()
         
