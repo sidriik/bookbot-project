@@ -61,7 +61,7 @@ class BookBot:
         # Подключение к базе данных
         try:
             self.db = DatabaseManager('telegram_books.db')
-            print("✅ База данных успешно подключена")
+            print(" База данных успешно подключена")
         except Exception as e:
             print(f"❌ Ошибка подключения к БД: {e}")
             raise
