@@ -463,7 +463,20 @@ class BookBot:
             
             print(f"[DEBUG] Навигация: {command}, книга {book_id}, страница {current_page}")
             
-            # Обработка команд навигации
+            # Обработка команды "В меню"
+            if command == "🏠 В меню":
+                # Сохраняем прогресс
+                if book_id and current_page:
+                    self.db.save_reading_progress(user_id, book_id, current_page)
+                
+                # Очищаем данные контекста
+                context.user_data.clear()
+                
+                # Возвращаемся в меню
+                await self.back_to_menu(update, context)
+                return CHOOSING
+            
+            # Обработка других команд
             new_page = current_page
             
             if command == "⬅️ Назад" and current_page > 1:
@@ -475,11 +488,6 @@ class BookBot:
                 self.db.save_reading_progress(user_id, book_id, current_page)
                 await update.message.reply_text(f"✅ Прогресс сохранен! Страница {current_page}")
                 book_page = self.db.get_book_content(book_id, current_page)
-            elif command == "🏠 В меню":
-                # Сохраняем прогресс и выходим в меню
-                self.db.save_reading_progress(user_id, book_id, current_page)
-                await self.back_to_menu(update, context)
-                return CHOOSING
             else:
                 await update.message.reply_text("❌ Неизвестная команда")
                 book_page = self.db.get_book_content(book_id, current_page)
@@ -617,19 +625,28 @@ class BookBot:
     # ========== ВСПОМОГАТЕЛЬНЫЕ ==========
     
     async def back_to_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        keyboard = [
-            [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
-            [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
-            [KeyboardButton(f"{EMOJI['help']} Помощь")]
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-        
-        await update.message.reply_text("🏠 <b>Главное меню</b>", parse_mode=ParseMode.HTML, reply_markup=reply_markup)
-        return CHOOSING
+        """Вернуться в главное меню."""
+        try:
+            keyboard = [
+                [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
+                [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
+                [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
+                [KeyboardButton(f"{EMOJI['help']} Помощь")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup
+            )
+            return CHOOSING
+        except Exception as e:
+            print(f"[BACK TO MENU ERROR] {e}")
+            return CHOOSING
     
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("❌ Действие отменено")
+        await update.message.reply_text(" Действие отменено")
         await self.back_to_menu(update, context)
         return CHOOSING
     
@@ -690,7 +707,6 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
-
         
         self.application.run_polling(
             poll_interval=1.0,
