@@ -653,7 +653,73 @@ class DatabaseManager:
         # Удаляем тестовый файл
         if os.path.exists(test_db):
             os.remove(test_db)
+    def add_book_with_content(self, title, author, genre, text):
+        """Добавляет книгу с полным текстом."""
+        session = self.Session()
+        try:
+            # Создаем запись о книге
+            new_book = Book(title=title, author=author, genre=genre)
+            session.add(new_book)
+            session.flush()  # Получаем ID новой книги
+            # Создаем запись с текстом
+            new_content = BookContent(book_id=new_book.id, text=text)
+            session.add(new_content)
+            session.commit()
+            return new_book.id
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
 
+    def get_book_content(self, book_id):
+        """Возвращает текст книги по её ID."""
+        session = self.Session()
+        try:
+            content = session.query(BookContent).filter_by(book_id=book_id).first()
+            return content.text if content else None
+        finally:
+            session.close()
+
+    # --- Методы для управления прогрессом чтения ---
+    def save_reading_progress(self, user_id, book_id, last_page):
+        """Сохраняет или обновляет прогресс чтения пользователя."""
+        session = self.Session()
+        try:
+            progress = session.query(ReadingProgress).filter_by(
+                user_id=user_id, book_id=book_id
+            ).first()
+            if progress:
+                progress.last_page = last_page
+            else:
+                progress = ReadingProgress(user_id=user_id, book_id=book_id, last_page=last_page)
+                session.add(progress)
+            session.commit()
+        except Exception as e:
+            session.rollback()
+            raise e
+        finally:
+            session.close()
+
+    def get_reading_progress(self, user_id, book_id):
+        """Получает прогресс чтения книги для конкретного пользователя."""
+        session = self.Session()
+        try:
+            progress = session.query(ReadingProgress).filter_by(
+                user_id=user_id, book_id=book_id
+            ).first()
+            return progress.last_page if progress else 0
+        finally:
+            session.close()
+
+    def get_books_with_content(self):
+        """Возвращает список книг, к которым прикреплён текст."""
+        session = self.Session()
+        try:
+            books = session.query(Book).join(BookContent).all()
+            return books
+        finally:
+            session.close()
 
 if __name__ == "__main__":
     DatabaseManager.simple_test()
