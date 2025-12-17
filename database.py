@@ -1,392 +1,230 @@
 import sqlite3
-import logging
+import json
 from typing import List, Dict, Any, Optional
 
 class DatabaseManager:
-    """Класс для работы с базой данных SQLite."""
-    
     def __init__(self, db_path: str = 'telegram_books.db'):
-        """
-        Инициализация подключения к базе данных.
-        
-        Args:
-            db_path (str): Путь к файлу базы данных
-        """
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        
-        # Инициализируем базу данных
-        self.init_db()
-        
-        # Настройка логирования
-        logging.basicConfig(level=logging.INFO)
-        self.logger = logging.getLogger(__name__)
+        self.init_database()
     
-    def init_db(self):
-        """Инициализация базы данных."""
-        # Таблица обычных книг
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS books (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                author TEXT NOT NULL,
-                genre TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица книг с текстом
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS books_with_content (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                author TEXT NOT NULL,
-                genre TEXT,
-                content TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица прогресса чтения
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS reading_progress (
-                user_id INTEGER,
-                book_id INTEGER,
-                page INTEGER DEFAULT 1,
-                last_read TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (user_id, book_id),
-                FOREIGN KEY (book_id) REFERENCES books_with_content(id)
-            )
-        ''')
-        
-        self.conn.commit()
-        print("[OK] Таблицы базы данных созданы/проверены")
-    
-    def add_book(self, title: str, author: str, genre: str = None) -> int:
-        """
-        Добавление книги в картотеку (без текста).
-        
-        Args:
-            title (str): Название книги
-            author (str): Автор книги
-            genre (str, optional): Жанр книги
+    def init_database(self):
+        """Инициализация базы данных"""
+        with sqlite3.connect(self.db_path) as conn:
+            # Таблица для книг без текста
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS books (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    genre TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
-        Returns:
-            int: ID добавленной книги
-        """
-        try:
-            self.cursor.execute(
-                "INSERT INTO books (title, author, genre) VALUES (?, ?, ?)",
+            # Таблица для книг с текстом
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS books_with_content (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    author TEXT NOT NULL,
+                    genre TEXT,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # Таблица прогресса чтения
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS reading_progress (
+                    user_id INTEGER,
+                    book_id INTEGER,
+                    page INTEGER DEFAULT 1,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, book_id)
+                )
+            ''')
+            
+            conn.commit()
+            print("[OK] База данных инициализирована")
+    
+    def get_connection(self):
+        """Получить соединение с базой данных"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def add_book(self, title: str, author: str, genre: str = "") -> int:
+        """Добавить книгу без текста"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO books (title, author, genre) VALUES (?, ?, ?)',
                 (title, author, genre)
             )
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except Exception as e:
-            self.logger.error(f"Ошибка при добавлении книги: {e}")
-            raise
+            conn.commit()
+            return cursor.lastrowid
     
     def add_book_with_content(self, title: str, author: str, genre: str, content: str) -> int:
-        """
-        Добавление книги с текстом.
-        
-        Args:
-            title (str): Название книги
-            author (str): Автор книги
-            genre (str): Жанр книги
-            content (str): Текст книги
-            
-        Returns:
-            int: ID добавленной книги
-        """
-        try:
-            self.cursor.execute(
-                "INSERT INTO books_with_content (title, author, genre, content) VALUES (?, ?, ?, ?)",
+        """Добавить книгу с текстом"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO books_with_content (title, author, genre, content) VALUES (?, ?, ?, ?)',
                 (title, author, genre, content)
             )
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except Exception as e:
-            self.logger.error(f"Ошибка при добавлении книги с текстом: {e}")
-            raise
-    
-    def add_book_from_file(self, title: str, author: str, genre: str, file_path: str) -> int:
-        """
-        Добавление книги из текстового файла.
-        
-        Args:
-            title (str): Название книги
-            author (str): Автор книги
-            genre (str): Жанр книги
-            file_path (str): Путь к текстовому файлу
-            
-        Returns:
-            int: ID добавленной книги
-        """
-        try:
-            # Читаем текст из файла
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # Добавляем книгу
-            return self.add_book_with_content(title, author, genre, content)
-        except Exception as e:
-            self.logger.error(f"Ошибка при загрузке книги из файла: {e}")
-            raise
-    
-    def search_books(self, query: str) -> List[Dict[str, Any]]:
-        """
-        Поиск книг по названию, автору или жанру.
-        
-        Args:
-            query (str): Поисковый запрос
-            
-        Returns:
-            List[Dict]: Список найденных книг
-        """
-        try:
-            search_pattern = f"%{query}%"
-            
-            # Ищем в обычных книгах
-            self.cursor.execute('''
-                SELECT id, title, author, genre 
-                FROM books 
-                WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?
-            ''', (search_pattern, search_pattern, search_pattern))
-            
-            books = []
-            for row in self.cursor.fetchall():
-                books.append({
-                    'id': row[0],
-                    'title': row[1],
-                    'author': row[2],
-                    'genre': row[3]
-                })
-            
-            # Ищем в книгах с текстом
-            self.cursor.execute('''
-                SELECT id, title, author, genre 
-                FROM books_with_content 
-                WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?
-            ''', (search_pattern, search_pattern, search_pattern))
-            
-            for row in self.cursor.fetchall():
-                books.append({
-                    'id': row[0],
-                    'title': row[1],
-                    'author': row[2],
-                    'genre': row[3]
-                })
-            
-            return books
-        except Exception as e:
-            self.logger.error(f"Ошибка при поиске книг: {e}")
-            return []
+            conn.commit()
+            return cursor.lastrowid
     
     def get_all_books(self) -> List[Dict[str, Any]]:
-        """
-        Получение всех книг из картотеки.
-        
-        Returns:
-            List[Dict]: Список всех книг
-        """
-        try:
-            self.cursor.execute("SELECT id, title, author, genre FROM books ORDER BY id DESC")
-            books = []
-            for row in self.cursor.fetchall():
-                books.append({
-                    'id': row[0],
-                    'title': row[1],
-                    'author': row[2],
-                    'genre': row[3]
-                })
-            return books
-        except Exception as e:
-            self.logger.error(f"Ошибка при получении всех книг: {e}")
-            return []
+        """Получить все книги без текста"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM books ORDER BY id DESC')
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
     
     def get_books_with_content(self) -> List[Dict[str, Any]]:
-        """
-        Получение всех книг с текстом.
-        
-        Returns:
-            List[Dict]: Список книг с текстом
-        """
-        try:
-            self.cursor.execute("SELECT id, title, author, genre, LENGTH(content) as content_length FROM books_with_content ORDER BY id DESC")
+        """Получить все книги с текстом"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM books_with_content ORDER BY id DESC')
+            rows = cursor.fetchall()
+            
             books = []
-            for row in self.cursor.fetchall():
-                pages = row[4] // 2000 + 1 if row[4] > 0 else 0
-                books.append({
-                    'id': row[0],
-                    'title': row[1],
-                    'author': row[2],
-                    'genre': row[3],
-                    'content_length': row[4],
-                    'pages': pages
-                })
+            for row in rows:
+                book = dict(row)
+                # Добавляем количество страниц (примерно 2000 символов на страницу)
+                content_len = len(book.get('content', ''))
+                book['pages'] = (content_len // 2000) + 1 if content_len > 0 else 0
+                books.append(book)
+            
             return books
-        except Exception as e:
-            self.logger.error(f"Ошибка при получении книг с текстом: {e}")
-            return []
     
-    def delete_book(self, book_id: int) -> bool:
-        """
-        Удаление книги по ID.
-        
-        Args:
-            book_id (int): ID книги
-            
-        Returns:
-            bool: True если удалено успешно
-        """
-        try:
-            # Пробуем удалить из обычных книг
-            self.cursor.execute("DELETE FROM books WHERE id = ?", (book_id,))
-            
-            # Если ничего не удалилось, пробуем из книг с текстом
-            if self.cursor.rowcount == 0:
-                self.cursor.execute("DELETE FROM books_with_content WHERE id = ?", (book_id,))
-            
-            # Также удаляем прогресс чтения
-            self.cursor.execute("DELETE FROM reading_progress WHERE book_id = ?", (book_id,))
-            
-            self.conn.commit()
-            return self.cursor.rowcount > 0
-        except Exception as e:
-            self.logger.error(f"Ошибка при удалении книги: {e}")
-            return False
-    
-    def get_book_content(self, book_id: int, page: int = 1, page_size: int = 2000) -> Optional[Dict[str, Any]]:
-        """
-        Получение страницы текста книги.
-        
-        Args:
-            book_id (int): ID книги
-            page (int): Номер страницы (начинается с 1)
-            page_size (int): Размер страницы в символах
-            
-        Returns:
-            Optional[Dict]: Информация о странице или None
-        """
-        try:
-            # Получаем общую информацию о книге
-            self.cursor.execute(
-                "SELECT id, title, author, genre, content FROM books_with_content WHERE id = ?",
-                (book_id,)
+    def search_books(self, query: str) -> List[Dict[str, Any]]:
+        """Поиск книг без текста"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            search_term = f'%{query}%'
+            cursor.execute(
+                'SELECT * FROM books WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?',
+                (search_term, search_term, search_term)
             )
-            row = self.cursor.fetchone()
-            
-            if not row:
-                return None
-            
-            book_id, title, author, genre, full_content = row
-            
-            # Рассчитываем позиции для пагинации
-            start_pos = (page - 1) * page_size
-            end_pos = start_pos + page_size
-            
-            # Извлекаем часть текста
-            content_part = full_content[start_pos:end_pos]
-            
-            # Рассчитываем общее количество страниц
-            total_pages = (len(full_content) + page_size - 1) // page_size
-            
-            # Рассчитываем процент прочитанного
-            progress_percent = min(100, int((page * page_size) / len(full_content) * 100)) if full_content else 0
-            
-            return {
-                'id': book_id,
-                'title': title,
-                'author': author,
-                'genre': genre,
-                'content': content_part,
-                'page': page,
-                'total_pages': total_pages,
-                'progress': f"{page}/{total_pages}",
-                'percentage': progress_percent
-            }
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def get_book_content(self, book_id: int, page: int = 1) -> Optional[Dict[str, Any]]:
+        """Получить страницу книги с текстом"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Получаем информацию о книге
+                cursor.execute(
+                    'SELECT * FROM books_with_content WHERE id = ?',
+                    (book_id,)
+                )
+                row = cursor.fetchone()
+                
+                if not row:
+                    print(f"[DB ERROR] Книга с ID {book_id} не найдена")
+                    return None
+                
+                book = dict(row)
+                content = book.get('content', '')
+                content_len = len(content)
+                
+                if content_len == 0:
+                    print(f"[DB ERROR] Книга с ID {book_id} не содержит текста")
+                    return None
+                
+                # Разбиваем текст на страницы по 2000 символов
+                page_size = 2000
+                total_pages = (content_len // page_size) + 1
+                
+                # Корректируем номер страницы
+                if page < 1:
+                    page = 1
+                elif page > total_pages:
+                    page = total_pages
+                
+                # Вычисляем начало и конец текста для текущей страницы
+                start_index = (page - 1) * page_size
+                end_index = min(start_index + page_size, content_len)
+                
+                # Получаем текст для текущей страницы
+                page_content = content[start_index:end_index]
+                
+                # Вычисляем прогресс
+                progress_position = start_index
+                percentage = (progress_position / content_len * 100) if content_len > 0 else 0
+                
+                result = {
+                    'id': book['id'],
+                    'title': book['title'],
+                    'author': book['author'],
+                    'genre': book.get('genre', ''),
+                    'content': page_content,
+                    'current_page': page,
+                    'total_pages': total_pages,
+                    'progress': f"{progress_position}/{content_len}",
+                    'percentage': round(percentage, 1)
+                }
+                
+                return result
+                
         except Exception as e:
-            self.logger.error(f"Ошибка при получении текста книги: {e}")
+            print(f"[DB ERROR] Ошибка при получении контента книги {book_id}: {e}")
             return None
     
-    def save_reading_progress(self, user_id: int, book_id: int, page: int) -> bool:
-        """
-        Сохранение прогресса чтения книги.
-        
-        Args:
-            user_id (int): ID пользователя
-            book_id (int): ID книги
-            page (int): Текущая страница
-            
-        Returns:
-            bool: True если успешно сохранено
-        """
+    def save_reading_progress(self, user_id: int, book_id: int, page: int):
+        """Сохранить прогресс чтения"""
         try:
-            self.cursor.execute('''
-                INSERT OR REPLACE INTO reading_progress (user_id, book_id, page, last_read)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (user_id, book_id, page))
-            self.conn.commit()
-            return True
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO reading_progress (user_id, book_id, page) 
+                    VALUES (?, ?, ?)
+                ''', (user_id, book_id, page))
+                conn.commit()
         except Exception as e:
-            self.logger.error(f"Ошибка при сохранении прогресса: {e}")
-            return False
+            print(f"[DB ERROR] Ошибка сохранения прогресса: {e}")
     
     def get_reading_progress(self, user_id: int, book_id: int) -> Optional[int]:
-        """
-        Получение сохраненного прогресса чтения.
-        
-        Args:
-            user_id (int): ID пользователя
-            book_id (int): ID книги
-            
-        Returns:
-            Optional[int]: Номер страницы или None
-        """
+        """Получить сохраненный прогресс чтения"""
         try:
-            self.cursor.execute(
-                "SELECT page FROM reading_progress WHERE user_id = ? AND book_id = ?",
-                (user_id, book_id)
-            )
-            row = self.cursor.fetchone()
-            return row[0] if row else None
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'SELECT page FROM reading_progress WHERE user_id = ? AND book_id = ?',
+                    (user_id, book_id)
+                )
+                row = cursor.fetchone()
+                return row[0] if row else None
         except Exception as e:
-            self.logger.error(f"Ошибка при получении прогресса: {e}")
+            print(f"[DB ERROR] Ошибка получения прогресса: {e}")
             return None
     
-    def get_user_progress(self, user_id: int) -> List[Dict[str, Any]]:
-        """
-        Получение всего прогресса пользователя.
-        
-        Args:
-            user_id (int): ID пользователя
-            
-        Returns:
-            List[Dict]: Список книг с прогрессом
-        """
+    def delete_book(self, book_id: int) -> bool:
+        """Удалить книгу (из обеих таблиц)"""
         try:
-            self.cursor.execute('''
-                SELECT rp.book_id, rp.page, b.title, b.author
-                FROM reading_progress rp
-                LEFT JOIN books_with_content b ON rp.book_id = b.id
-                WHERE rp.user_id = ?
-                ORDER BY rp.last_read DESC
-            ''', (user_id,))
-            
-            progress = []
-            for row in self.cursor.fetchall():
-                progress.append({
-                    'book_id': row[0],
-                    'page': row[1],
-                    'title': row[2] or "Неизвестная книга",
-                    'author': row[3] or "Неизвестный автор"
-                })
-            return progress
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Пробуем удалить из обеих таблиц
+                deleted_count = 0
+                
+                cursor.execute('DELETE FROM books WHERE id = ?', (book_id,))
+                deleted_count += cursor.rowcount
+                
+                cursor.execute('DELETE FROM books_with_content WHERE id = ?', (book_id,))
+                deleted_count += cursor.rowcount
+                
+                # Удаляем прогресс чтения для этой книги
+                cursor.execute('DELETE FROM reading_progress WHERE book_id = ?', (book_id,))
+                
+                conn.commit()
+                return deleted_count > 0
+                
         except Exception as e:
-            self.logger.error(f"Ошибка при получении прогресса пользователя: {e}")
-            return []
-    
-    def close(self):
-        """Закрытие соединения с базой данных."""
-        self.conn.close()
+            print(f"[DB ERROR] Ошибка удаления книги {book_id}: {e}")
+            return False
