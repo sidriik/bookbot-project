@@ -286,7 +286,7 @@ class BookBot:
             
         except Exception as e:
             print(f"[ADD DETAILS ERROR] {e}")
-            await update.message.reply_text(f"❌ Ошибка добавления: {e}")
+            await update.message.reply_text(f"❌ Ошибка добавления: {str(e)[:100]}")
             return CHOOSING
     
     # ========== СПИСОК КНИГ ==========
@@ -355,39 +355,98 @@ class BookBot:
             return CHOOSING
     
     async def handle_read_book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка начала чтения книги."""
         try:
             book_id = int(update.message.text.strip())
             user_id = update.effective_user.id
             
-            book_page = self.db.get_book_content(book_id, 1)
-            if not book_page:
+            print(f"[DEBUG] Пользователь {user_id} хочет читать книгу {book_id}")
+            
+            # Проверяем, есть ли такая книга
+            books = self.db.get_books_with_content()
+            book_exists = any(b['id'] == book_id for b in books)
+            
+            if not book_exists:
+                print(f"[DEBUG] Книга {book_id} не найдена")
                 await update.message.reply_text("❌ Книга не найдена или не содержит текста")
                 return CHOOSING
             
+            print(f"[DEBUG] Книга {book_id} найдена")
+            
+            # Получаем прогресс чтения
             saved_page = self.db.get_reading_progress(user_id, book_id)
             current_page = saved_page if saved_page else 1
             
-            book_page = self.db.get_book_content(book_id, current_page)
-            if not book_page:
-                await update.message.reply_text("❌ Ошибка загрузки страницы")
-                return CHOOSING
+            print(f"[DEBUG] Текущая страница: {current_page}")
             
+            # Получаем страницу книги
+            book_page = self.db.get_book_content(book_id, current_page)
+            
+            if not book_page:
+                print(f"[DEBUG] Не удалось получить страницу {current_page}")
+                # Попробуем первую страницу
+                current_page = 1
+                book_page = self.db.get_book_content(book_id, current_page)
+                
+                if not book_page:
+                    print(f"[DEBUG] Не удалось получить первую страницу")
+                    await update.message.reply_text("❌ Ошибка загрузки текста книги")
+                    return CHOOSING
+            
+            print(f"[DEBUG] Страница получена: {book_page['title']}")
+            
+            # Сохраняем данные в контексте
             context.user_data['current_book_id'] = book_id
             context.user_data['current_page'] = current_page
             
-            keyboard = self._create_reading_keyboard(current_page, book_page['total_pages'])
+            # Создаем клавиатуру для навигации
+            keyboard = []
+            
+            nav_buttons = []
+            if current_page > 1:
+                nav_buttons.append(KeyboardButton("⬅️ Назад"))
+            
+            nav_buttons.append(KeyboardButton("🔖 Сохранить"))
+            
+            if current_page < book_page['total_pages']:
+                nav_buttons.append(KeyboardButton("➡️ Вперед"))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([KeyboardButton("🏠 В меню")])
+            
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
-            response = self._format_book_page(book_page, current_page)
+            # Форматируем страницу
+            response = f"📖 <b>{book_page['title']}</b>\n"
+            response += f"👤 {book_page['author']}\n"
+            response += f"🏷️ {book_page['genre']}\n"
+            response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
+            response += f"📊 {book_page['progress']} ({book_page['percentage']}%)\n\n"
+            
+            # Добавляем текст (ограничиваем длину)
+            text_content = book_page['content']
+            if len(text_content) > 3000:
+                text_content = text_content[:3000] + "..."
+            
+            # Заменяем HTML-теги для безопасного отображения
+            text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
+            
+            response += f"<pre>{text_content}</pre>\n\n"
+            response += "<i>Используйте кнопки для навигации</i>"
+            
             await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return READING
             
         except ValueError:
-            await update.message.reply_text("❌ Введите числовой ID")
+            await update.message.reply_text("❌ Введите числовой ID книги")
             return TYPING_BOOK_ID
         except Exception as e:
             print(f"[READ ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка начала чтения")
+            import traceback
+            traceback.print_exc()
+            await update.message.reply_text(f"❌ Ошибка начала чтения: {str(e)[:100]}")
             return CHOOSING
     
     async def handle_reading_navigation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -402,15 +461,22 @@ class BookBot:
                 await update.message.reply_text("❌ Сессия потеряна. Начните заново.")
                 return CHOOSING
             
+            print(f"[DEBUG] Навигация: {command}, книга {book_id}, страница {current_page}")
+            
+            # Обработка команд навигации
+            new_page = current_page
+            
             if command == "⬅️ Назад" and current_page > 1:
-                current_page -= 1
+                new_page = current_page - 1
             elif command == "➡️ Вперед":
-                current_page += 1
+                new_page = current_page + 1
             elif command == "🔖 Сохранить":
+                # Сохраняем прогресс
                 self.db.save_reading_progress(user_id, book_id, current_page)
                 await update.message.reply_text(f"✅ Прогресс сохранен! Страница {current_page}")
                 book_page = self.db.get_book_content(book_id, current_page)
             elif command == "🏠 В меню":
+                # Сохраняем прогресс и выходим в меню
                 self.db.save_reading_progress(user_id, book_id, current_page)
                 await self.back_to_menu(update, context)
                 return CHOOSING
@@ -418,58 +484,67 @@ class BookBot:
                 await update.message.reply_text("❌ Неизвестная команда")
                 book_page = self.db.get_book_content(book_id, current_page)
             
+            # Если страница изменилась
+            if new_page != current_page:
+                book_page = self.db.get_book_content(book_id, new_page)
+                
+                if not book_page:
+                    await update.message.reply_text("❌ Страница не найдена")
+                    return READING
+                
+                current_page = new_page
+                context.user_data['current_page'] = current_page
+            
+            # Если book_page еще не получен (например, при команде "Сохранить")
             if 'book_page' not in locals():
                 book_page = self.db.get_book_content(book_id, current_page)
             
-            if not book_page:
-                await update.message.reply_text("❌ Страница не найдена")
-                return READING
-            
-            context.user_data['current_page'] = current_page
+            # Сохраняем прогресс (авто-сохранение)
             self.db.save_reading_progress(user_id, book_id, current_page)
             
-            keyboard = self._create_reading_keyboard(current_page, book_page['total_pages'])
+            # Создаем клавиатуру
+            keyboard = []
+            
+            nav_buttons = []
+            if current_page > 1:
+                nav_buttons.append(KeyboardButton("⬅️ Назад"))
+            
+            nav_buttons.append(KeyboardButton("🔖 Сохранить"))
+            
+            if current_page < book_page['total_pages']:
+                nav_buttons.append(KeyboardButton("➡️ Вперед"))
+            
+            if nav_buttons:
+                keyboard.append(nav_buttons)
+            
+            keyboard.append([KeyboardButton("🏠 В меню")])
+            
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
-            response = self._format_book_page(book_page, current_page)
+            # Форматируем ответ
+            response = f"📖 <b>{book_page['title']}</b>\n"
+            response += f"👤 {book_page['author']}\n"
+            response += f"🏷️ {book_page['genre']}\n"
+            response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
+            response += f"📊 {book_page['progress']} ({book_page['percentage']}%)\n\n"
+            
+            text_content = book_page['content']
+            if len(text_content) > 3000:
+                text_content = text_content[:3000] + "..."
+            
+            text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
+            
+            response += f"<pre>{text_content}</pre>\n\n"
+            response += "<i>Используйте кнопки для навигации</i>"
+            
             await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return READING
             
         except Exception as e:
             print(f"[NAV ERROR] {e}")
+            import traceback
+            traceback.print_exc()
             return CHOOSING
-    
-    def _create_reading_keyboard(self, current_page: int, total_pages: int):
-        keyboard = []
-        
-        nav_buttons = []
-        if current_page > 1:
-            nav_buttons.append(KeyboardButton("⬅️ Назад"))
-        
-        nav_buttons.append(KeyboardButton("🔖 Сохранить"))
-        
-        if current_page < total_pages:
-            nav_buttons.append(KeyboardButton("➡️ Вперед"))
-        
-        if nav_buttons:
-            keyboard.append(nav_buttons)
-        
-        keyboard.append([KeyboardButton("🏠 В меню")])
-        return keyboard
-    
-    def _format_book_page(self, book_page, current_page):
-        content_preview = book_page['content'][:1500]
-        if len(book_page['content']) > 1500:
-            content_preview += "..."
-            
-        return (
-            f"📖 <b>{book_page['title']}</b>\n"
-            f"👤 {book_page['author']}\n"
-            f"📝 Страница {current_page}/{book_page['total_pages']}\n"
-            f"📊 {book_page['progress']} ({book_page['percentage']}%)\n\n"
-            f"{content_preview}\n\n"
-            f"<i>Используйте кнопки для навигации</i>"
-        )
     
     # ========== УДАЛЕНИЕ ==========
     
@@ -615,6 +690,7 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
+
         
         self.application.run_polling(
             poll_interval=1.0,
