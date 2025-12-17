@@ -6,6 +6,7 @@ import argparse
 import os
 import sys
 import warnings
+import tempfile
 from typing import List, Dict, Any
 
 # Подавляем предупреждения
@@ -14,15 +15,14 @@ warnings.filterwarnings("ignore", message=".*per_message=False.*")
 # Добавляем текущую директорию в путь Python
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, 
     CommandHandler, 
     MessageHandler, 
     ContextTypes, 
     ConversationHandler,
-    filters,
-    CallbackQueryHandler
+    filters
 )
 from telegram.constants import ParseMode
 
@@ -35,11 +35,15 @@ EMOJI = {
     "list": "📋", "help": "❓", "back": "↩️", "home": "🏠", "check": "✅",
     "cross": "❌", "book": "📚", "user": "👤", "pencil": "✏️", "bookshelf": "📖",
     "trash": "🗑️", "info": "ℹ️", "read": "📖", "bookmark": "🔖", 
-    "prev": "⬅️", "next": "➡️", "progress": "📊"
+    "prev": "⬅️", "next": "➡️", "progress": "📊", "upload": "📤", "file": "📄"
 }
 
 # Состояния диалога
-CHOOSING, TYPING_SEARCH, TYPING_BOOK_INFO, CONFIRM_DELETE, TYPING_BOOK_ID, READING = range(6)
+(
+    CHOOSING, TYPING_SEARCH, TYPING_BOOK_INFO, 
+    CONFIRM_DELETE, TYPING_BOOK_ID, READING,
+    UPLOADING_FILE, TYPING_FILE_INFO
+) = range(8)
 
 class BookBot:
     """Основной класс Telegram бота."""
@@ -78,8 +82,9 @@ class BookBot:
 <b>Что умею:</b>
 {EMOJI['search']} Искать книги в вашей библиотеке
 {EMOJI['plus']} Добавлять новые книги (с текстом!)
+{EMOJI['upload']} <b>Загружать книги из файлов</b> - новая функция!
 {EMOJI['list']} Показывать все ваши книги
-{EMOJI['read']} <b>Читать книги</b> - новая функция!
+{EMOJI['read']} Читать книги
 {EMOJI['trash']} Удалять книги
 {EMOJI['trophy']} Показывать статистику
 
@@ -87,9 +92,9 @@ class BookBot:
         
         keyboard = [
             [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
-            [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
-            [KeyboardButton(f"{EMOJI['help']} Помощь")]
+            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['upload']} Загрузить файл")],
+            [KeyboardButton(f"{EMOJI['read']} Читать"), KeyboardButton(f"{EMOJI['trash']} Удалить")],
+            [KeyboardButton(f"{EMOJI['info']} Статистика"), KeyboardButton(f"{EMOJI['help']} Помощь")]
         ]
         
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -110,6 +115,7 @@ class BookBot:
 /start - Главное меню
 /search - Поиск книг
 /add - Добавить книгу
+/upload - Загрузить книгу из файла
 /mybooks - Все мои книги
 /delete - Удалить книгу
 /read - Читать книги
@@ -121,6 +127,12 @@ class BookBot:
 <b>Формат добавления книги с текстом:</b>
 <code>Название | Автор | Жанр | Текст книги</code>
 
+<b>Загрузка из файла:</b>
+1. Нажмите "Загрузить файл"
+2. Отправьте текстовый файл (.txt)
+3. Введите информацию о книге:
+   <code>Название | Автор | Жанр</code>
+
 <b>Примеры:</b>
 <code>Властелин колец | Толкин | Фэнтези</code>
 <code>1984 | Оруэлл | Антиутопия</code>
@@ -129,6 +141,7 @@ class BookBot:
 <b>Для поиска</b> просто введите название, автора или жанр."""
         
         await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+        return CHOOSING
     
     # ========== МЕТОДЫ ДЛЯ УЧЕТА КНИГ ==========
     
@@ -213,7 +226,7 @@ class BookBot:
                 f"{EMOJI['plus']} <b>Введите книгу с текстом:</b>\n"
                 "<code>Название | Автор | Жанр | Текст книги</code>\n\n"
                 "<i>Пример:</i>\n"
-                "<code>Тестовая книга | Автор | Жанр | Это текст книги для тестирования...</code>",
+                "<code>Гарри Поттер | Дж.К. Роулинг | Фэнтези | Мистер и миссис Дурсль проживали в доме...</code>",
                 parse_mode=ParseMode.HTML
             )
             context.user_data['add_type'] = 'with_content'
@@ -232,10 +245,13 @@ class BookBot:
         
         try:
             if add_type == 'simple':
+                # Книга для учета (без текста)
                 if "|" not in text or text.count("|") != 2:
                     await update.message.reply_text(
-                        f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
-                        "Используйте: <code>Название | Автор | Жанр</code>",
+                        f"{EMOJI['cross']} <b>Неверный формат для книги без текста.</b>\n"
+                        "Используйте: <code>Название | Автор | Жанр</code>\n\n"
+                        "<i>Пример:</i>\n"
+                        "<code>Властелин колец | Толкин | Фэнтези</code>",
                         parse_mode=ParseMode.HTML
                     )
                     return TYPING_BOOK_INFO
@@ -250,6 +266,7 @@ class BookBot:
                     )
                     return TYPING_BOOK_INFO
                 
+                # Добавляем книгу
                 book_id = self.db.add_book(title, author, genre)
                 
                 await update.message.reply_text(
@@ -262,15 +279,27 @@ class BookBot:
                 )
                 
             else:
+                # Книга с текстом
                 if "|" not in text or text.count("|") < 3:
                     await update.message.reply_text(
-                        f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
-                        "Используйте: <code>Название | Автор | Жанр | Текст книги</code>",
+                        f"{EMOJI['cross']} <b>Неверный формат для книги с текстом.</b>\n"
+                        "Используйте: <code>Название | Автор | Жанр | Текст книги</code>\n\n"
+                        "<i>Пример:</i>\n"
+                        "<code>Гарри Поттер | Джоан Роулинг | Фэнтези | Мистер и миссис Дурсль...</code>",
                         parse_mode=ParseMode.HTML
                     )
                     return TYPING_BOOK_INFO
                 
+                # Разбиваем на 4 части
                 parts = [x.strip() for x in text.split("|", 3)]
+                if len(parts) < 4:
+                    await update.message.reply_text(
+                        f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
+                        "Нужно 4 части: Название | Автор | Жанр | Текст книги",
+                        parse_mode=ParseMode.HTML
+                    )
+                    return TYPING_BOOK_INFO
+                
                 title, author, genre, content = parts[0], parts[1], parts[2], parts[3]
                 
                 if len(title) < 2 or len(author) < 2:
@@ -287,6 +316,7 @@ class BookBot:
                     )
                     return TYPING_BOOK_INFO
                 
+                # Добавляем книгу с текстом
                 book_id = self.db.add_book_with_content(title, author, genre, content)
                 pages = (len(content) // 2000) + 1
                 
@@ -302,6 +332,7 @@ class BookBot:
                     parse_mode=ParseMode.HTML
                 )
             
+            # Очищаем данные
             if 'add_type' in context.user_data:
                 del context.user_data['add_type']
             
@@ -315,6 +346,147 @@ class BookBot:
             )
             return CHOOSING
     
+    # ========== МЕТОДЫ ДЛЯ ЗАГРУЗКИ ФАЙЛОВ ==========
+    
+    async def upload_book_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начать загрузку книги из файла."""
+        await update.message.reply_text(
+            f"{EMOJI['upload']} <b>Загрузите текстовый файл с книгой (.txt)</b>\n\n"
+            "Отправьте файл, после чего введите информацию о книге в формате:\n"
+            "<code>Название | Автор | Жанр</code>\n\n"
+            "<i>Пример:</i>\n"
+            "<code>Война и мир | Лев Толстой | Роман</code>",
+            parse_mode=ParseMode.HTML
+        )
+        return UPLOADING_FILE
+    
+    async def handle_file_upload(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка загруженного файла."""
+        try:
+            document = update.message.document
+            
+            # Проверяем, что это текстовый файл
+            if not document.file_name.endswith('.txt'):
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Поддерживаются только текстовые файлы (.txt)</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                return UPLOADING_FILE
+            
+            # Скачиваем файл
+            file = await context.bot.get_file(document.file_id)
+            
+            # Создаем временный файл
+            with tempfile.NamedTemporaryFile(mode='wb', delete=False, suffix='.txt') as tmp_file:
+                await file.download_to_drive(tmp_file.name)
+                file_path = tmp_file.name
+            
+            # Сохраняем путь к файлу в контексте
+            context.user_data['uploaded_file'] = file_path
+            
+            await update.message.reply_text(
+                f"{EMOJI['check']} <b>Файл '{document.file_name}' успешно загружен!</b>\n\n"
+                f"Теперь введите информацию о книге:\n"
+                "<code>Название | Автор | Жанр</code>",
+                parse_mode=ParseMode.HTML
+            )
+            
+            return TYPING_FILE_INFO
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при загрузке файла: {e}")
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Ошибка при загрузке файла:</b>\n{str(e)}",
+                parse_mode=ParseMode.HTML
+            )
+            return UPLOADING_FILE
+    
+    async def handle_file_info(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка информации о загруженной книге."""
+        try:
+            text = update.message.text.strip()
+            
+            # Проверяем формат
+            if "|" not in text or text.count("|") != 2:
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Неверный формат.</b>\n"
+                    "Используйте: <code>Название | Автор | Жанр</code>\n\n"
+                    "<i>Пример:</i>\n"
+                    "<code>Война и мир | Лев Толстой | Роман</code>",
+                    parse_mode=ParseMode.HTML
+                )
+                return TYPING_FILE_INFO
+            
+            parts = [x.strip() for x in text.split("|")]
+            title, author, genre = parts[0], parts[1], parts[2]
+            
+            if len(title) < 2 or len(author) < 2:
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Слишком короткое название или имя автора.</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                return TYPING_FILE_INFO
+            
+            # Получаем путь к файлу из контекста
+            file_path = context.user_data.get('uploaded_file')
+            if not file_path or not os.path.exists(file_path):
+                await update.message.reply_text(
+                    f"{EMOJI['cross']} <b>Файл не найден. Попробуйте загрузить снова.</b>",
+                    parse_mode=ParseMode.HTML
+                )
+                return UPLOADING_FILE
+            
+            # Добавляем книгу из файла
+            book_id = self.db.add_book_from_file(title, author, genre, file_path)
+            
+            # Получаем размер файла
+            file_size = os.path.getsize(file_path)
+            
+            # Удаляем временный файл
+            try:
+                os.remove(file_path)
+            except:
+                pass
+            
+            # Очищаем данные
+            if 'uploaded_file' in context.user_data:
+                del context.user_data['uploaded_file']
+            
+            pages = (file_size // 2000) + 1
+            
+            await update.message.reply_text(
+                f"{EMOJI['check']} <b>Книга успешно добавлена из файла!</b>\n\n"
+                f"<b>ID:</b> {book_id}\n"
+                f"<b>Название:</b> {title}\n"
+                f"<b>Автор:</b> {author}\n"
+                f"<b>Жанр:</b> {genre}\n"
+                f"<b>Размер файла:</b> {file_size} байт\n"
+                f"<b>Примерно страниц:</b> {pages}\n\n"
+                f"Теперь можете читать её через {EMOJI['read']} <b>Читать</b>",
+                parse_mode=ParseMode.HTML
+            )
+            
+            return CHOOSING
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при добавлении книги из файла: {e}")
+            
+            # Пытаемся удалить временный файл
+            file_path = context.user_data.get('uploaded_file')
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except:
+                    pass
+            
+            await update.message.reply_text(
+                f"{EMOJI['cross']} <b>Ошибка при добавлении книги из файла:</b>\n{str(e)}",
+                parse_mode=ParseMode.HTML
+            )
+            return CHOOSING
+    
+    # ========== ОСТАЛЬНЫЕ МЕТОДЫ ==========
+    
     async def my_books(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать все книги."""
         try:
@@ -324,7 +496,7 @@ class BookBot:
             if not books and not books_with_content:
                 await update.message.reply_text(
                     f"{EMOJI['list']} <b>Ваша библиотека пуста.</b>\n"
-                    f"Используйте {EMOJI['plus']} <b>Добавить</b> для первой книги.",
+                    f"Используйте {EMOJI['plus']} <b>Добавить</b> или {EMOJI['upload']} <b>Загрузить файл</b> для первой книги.",
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -489,7 +661,7 @@ class BookBot:
             if not books:
                 await update.message.reply_text(
                     f"{EMOJI['read']} <b>Нет книг для чтения.</b>\n"
-                    f"Сначала добавьте книги с текстом через {EMOJI['plus']} Добавить",
+                    f"Сначала добавьте книги с текстом через {EMOJI['plus']} Добавить или {EMOJI['upload']} Загрузить файл",
                     parse_mode=ParseMode.HTML
                 )
                 return CHOOSING
@@ -673,9 +845,9 @@ class BookBot:
         """Вернуться в меню."""
         keyboard = [
             [KeyboardButton(f"{EMOJI['search']} Поиск"), KeyboardButton(f"{EMOJI['list']} Все книги")],
-            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['read']} Читать")],
-            [KeyboardButton(f"{EMOJI['trash']} Удалить"), KeyboardButton(f"{EMOJI['info']} Статистика")],
-            [KeyboardButton(f"{EMOJI['help']} Помощь")]
+            [KeyboardButton(f"{EMOJI['plus']} Добавить"), KeyboardButton(f"{EMOJI['upload']} Загрузить файл")],
+            [KeyboardButton(f"{EMOJI['read']} Читать"), KeyboardButton(f"{EMOJI['trash']} Удалить")],
+            [KeyboardButton(f"{EMOJI['info']} Статистика"), KeyboardButton(f"{EMOJI['help']} Помощь")]
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         
@@ -705,6 +877,7 @@ class BookBot:
                     MessageHandler(filters.Regex(f"^{EMOJI['search']} Поиск$"), self.search_books),
                     MessageHandler(filters.Regex(f"^{EMOJI['list']} Все книги$"), self.my_books),
                     MessageHandler(filters.Regex(f"^{EMOJI['plus']} Добавить$"), self.add_book),
+                    MessageHandler(filters.Regex(f"^{EMOJI['upload']} Загрузить файл$"), self.upload_book_file),
                     MessageHandler(filters.Regex(f"^{EMOJI['read']} Читать$"), self.read_book_menu),
                     MessageHandler(filters.Regex(f"^{EMOJI['trash']} Удалить$"), self.delete_book),
                     MessageHandler(filters.Regex(f"^{EMOJI['info']} Статистика$"), self.show_stats),
@@ -713,6 +886,7 @@ class BookBot:
                     CommandHandler("mybooks", self.my_books),
                     CommandHandler("stats", self.show_stats),
                     CommandHandler("read", self.read_book_menu),
+                    CommandHandler("upload", self.upload_book_file),
                 ],
                 TYPING_SEARCH: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search),
@@ -729,6 +903,13 @@ class BookBot:
                 CONFIRM_DELETE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.confirm_delete),
                 ],
+                UPLOADING_FILE: [
+                    MessageHandler(filters.Document.ALL & ~filters.COMMAND, self.handle_file_upload),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_file_upload),
+                ],
+                TYPING_FILE_INFO: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_file_info),
+                ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel)],
             per_message=False,
@@ -739,6 +920,7 @@ class BookBot:
         self.application.add_handler(CommandHandler("search", self.search_books))
         self.application.add_handler(CommandHandler("add", self.add_book))
         self.application.add_handler(CommandHandler("delete", self.delete_book))
+        self.application.add_handler(CommandHandler("upload", self.upload_book_file))
     
     def run(self):
         """Запуск бота."""

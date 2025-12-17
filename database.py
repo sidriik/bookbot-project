@@ -61,7 +61,7 @@ class DatabaseManager:
         ''')
         
         self.conn.commit()
-        print(" Таблицы базы данных созданы/проверены")
+        print("[OK] Таблицы базы данных созданы/проверены")
     
     def add_book(self, title: str, author: str, genre: str = None) -> int:
         """
@@ -110,6 +110,30 @@ class DatabaseManager:
             self.logger.error(f"Ошибка при добавлении книги с текстом: {e}")
             raise
     
+    def add_book_from_file(self, title: str, author: str, genre: str, file_path: str) -> int:
+        """
+        Добавление книги из текстового файла.
+        
+        Args:
+            title (str): Название книги
+            author (str): Автор книги
+            genre (str): Жанр книги
+            file_path (str): Путь к текстовому файлу
+            
+        Returns:
+            int: ID добавленной книги
+        """
+        try:
+            # Читаем текст из файла
+            with open(file_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Добавляем книгу
+            return self.add_book_with_content(title, author, genre, content)
+        except Exception as e:
+            self.logger.error(f"Ошибка при загрузке книги из файла: {e}")
+            raise
+    
     def search_books(self, query: str) -> List[Dict[str, Any]]:
         """
         Поиск книг по названию, автору или жанру.
@@ -125,7 +149,7 @@ class DatabaseManager:
             
             # Ищем в обычных книгах
             self.cursor.execute('''
-                SELECT id, title, author, genre, 'simple' as type 
+                SELECT id, title, author, genre 
                 FROM books 
                 WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?
             ''', (search_pattern, search_pattern, search_pattern))
@@ -136,13 +160,12 @@ class DatabaseManager:
                     'id': row[0],
                     'title': row[1],
                     'author': row[2],
-                    'genre': row[3],
-                    'type': row[4]
+                    'genre': row[3]
                 })
             
             # Ищем в книгах с текстом
             self.cursor.execute('''
-                SELECT id, title, author, genre, 'with_content' as type 
+                SELECT id, title, author, genre 
                 FROM books_with_content 
                 WHERE title LIKE ? OR author LIKE ? OR genre LIKE ?
             ''', (search_pattern, search_pattern, search_pattern))
@@ -152,8 +175,7 @@ class DatabaseManager:
                     'id': row[0],
                     'title': row[1],
                     'author': row[2],
-                    'genre': row[3],
-                    'type': row[4]
+                    'genre': row[3]
                 })
             
             return books
@@ -225,6 +247,9 @@ class DatabaseManager:
             # Если ничего не удалилось, пробуем из книг с текстом
             if self.cursor.rowcount == 0:
                 self.cursor.execute("DELETE FROM books_with_content WHERE id = ?", (book_id,))
+            
+            # Также удаляем прогресс чтения
+            self.cursor.execute("DELETE FROM reading_progress WHERE book_id = ?", (book_id,))
             
             self.conn.commit()
             return self.cursor.rowcount > 0
