@@ -876,13 +876,6 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
-        print("=" * 50)
-        print("✅ BookBot запущен с поддержкой файлов!")
-        print("📚 Отправьте /start в Telegram")
-        print("📁 Теперь можно загружать книги файлами")
-        print("📥 Скачивание: /download <id>")
-        print("⏸️  Ctrl+C для остановки")
-        print("=" * 50)
         
         self.application.run_polling(
             drop_pending_updates=True,
