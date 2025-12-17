@@ -615,11 +615,6 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
-        print("=" * 50)
-        print("🤖 BookBot запущен!")
-        print("📱 Отправьте /start в Telegram")
-        print("⏸️  Ctrl+C для остановки")
-        print("=" * 50)
         
         self.application.run_polling(
             poll_interval=1.0,
@@ -637,7 +632,7 @@ def main():
     token = args.token or "8039724055:AAHDEJs6rUxsgN8l2fJphLDAsQfq8FVZTLI"
     
     if not token:
-        print("❌ Укажите токен бота")
+        print(" Укажите токен бота")
         sys.exit(1)
     
     bot = BookBot(token)
