@@ -7,6 +7,14 @@ import os
 import sys
 from typing import List, Dict, Any
 
+
+# Исправляем кодировку для Windows
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except:
+        pass
+
 # Добавляем текущую директорию в путь Python
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -835,9 +843,8 @@ class BookBot:
         """Запуск бота."""
         self.setup()
         print("=" * 60)
-        print("🤖 BookBot запущен с функцией чтения книг!")
-        print("📱 Перейдите в Telegram и используйте /start")
-        print("=" * 60)
+        print(">>> BookBot запущен с функцией чтения книг!")
+               print("=" * 60)
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
