@@ -298,7 +298,9 @@ class BookBot:
                     f"📊 Размер: {file_size_mb:.1f} MB\n"
                     f"📁 Формат: {file_ext}\n\n"
                     f"Теперь введите информацию о книге:\n"
-                    f"<code>Название | Автор | Жанр</code>",
+                    f"<code>Название | Автор | Жанр</code>\n\n"
+                    f"<i>Например:</i>\n"
+                    f"<code>Зеленая лампа | А. Грин | Притча</code>",
                     parse_mode=ParseMode.HTML
                 )
                 return PROCESSING_FILE
@@ -317,15 +319,36 @@ class BookBot:
         try:
             text = update.message.text.strip()
             
+            # Если пользователь нажал кнопку меню, отменяем добавление
+            if text in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
+                       f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
+                       f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
+                       f"{EMOJI['help']} Помощь", "🏠 В меню"]:
+                # Очищаем данные
+                if 'uploaded_file' in context.user_data:
+                    del context.user_data['uploaded_file']
+                if 'add_type' in context.user_data:
+                    del context.user_data['add_type']
+                
+                await update.message.reply_text("❌ Добавление книги отменено.")
+                await self.back_to_menu(update, context)
+                return CHOOSING
+            
+            # Проверяем формат
             if "|" not in text or text.count("|") < 2:
                 await update.message.reply_text(
                     "❌ Неверный формат. Используйте: Название | Автор | Жанр\n\n"
-                    "<i>Пример:</i>\n<code>Война и мир | Толстой | Роман</code>",
+                    "<i>Пример:</i>\n<code>Зеленая лампа | А. Грин | Притча</code>\n\n"
+                    "Или нажмите кнопку '🏠 В меню' для отмены",
                     parse_mode=ParseMode.HTML
                 )
                 return PROCESSING_FILE
             
             parts = [x.strip() for x in text.split("|")]
+            if len(parts) < 3:
+                await update.message.reply_text("❌ Не хватает данных. Нужно: Название | Автор | Жанр")
+                return PROCESSING_FILE
+            
             title, author, genre = parts[0], parts[1], parts[2]
             
             # Получаем информацию о файле
@@ -335,17 +358,20 @@ class BookBot:
                 return await self.back_to_menu(update, context)
             
             # Скачиваем файл
-            file = await context.bot.get_file(file_info['file_id'])
-            
-            # Создаем уникальное имя файла
-            safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            safe_author = "".join(c for c in author if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            file_path = self.books_folder / f"{safe_title}_{safe_author}_{file_info['file_name']}"
-            
-            # Скачиваем файл
             try:
+                file = await context.bot.get_file(file_info['file_id'])
+                
+                # Создаем безопасное имя файла
+                import re
+                safe_title = re.sub(r'[^\w\s\-]', '', title)
+                safe_author = re.sub(r'[^\w\s\-]', '', author)
+                file_name = f"{safe_title}_{safe_author}{file_info['file_ext']}"
+                file_path = self.books_folder / file_name
+                
+                # Скачиваем файл
                 await file.download_to_drive(file_path)
                 print(f"[FILE] Файл сохранен: {file_path}")
+                
             except Exception as e:
                 print(f"[FILE ERROR] Ошибка сохранения файла: {e}")
                 await update.message.reply_text("❌ Ошибка при сохранении файла")
@@ -387,7 +413,8 @@ class BookBot:
                     f"📊 Формат: {file_info['file_ext']}\n"
                     f"💾 Размер: {file_size_mb:.1f} MB\n"
                     f"🆔 ID: {book_id}\n\n"
-                    f"Для скачивания: /download {book_id}",
+                    f"Для скачивания: /download {book_id}\n"
+                    f"Для чтения: {EMOJI['read']} Читать",
                     parse_mode=ParseMode.HTML
                 )
                 
@@ -415,6 +442,17 @@ class BookBot:
         try:
             text = update.message.text.strip()
             add_type = context.user_data.get('add_type', 'simple')
+            
+            # Если пользователь нажал кнопку меню, отменяем
+            if text in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
+                       f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
+                       f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
+                       f"{EMOJI['help']} Помощь", "🏠 В меню"]:
+                if 'add_type' in context.user_data:
+                    del context.user_data['add_type']
+                await update.message.reply_text("❌ Добавление книги отменено.")
+                await self.back_to_menu(update, context)
+                return CHOOSING
             
             if add_type == 'simple':
                 if "|" not in text or text.count("|") != 2:
@@ -569,6 +607,14 @@ class BookBot:
         """Обработка начала чтения книги."""
         try:
             user_input = update.message.text.strip()
+            
+            # Если нажата кнопка меню
+            if user_input in [f"{EMOJI['list']} Все книги", f"{EMOJI['search']} Поиск",
+                             f"{EMOJI['plus']} Добавить книгу", f"{EMOJI['read']} Читать",
+                             f"{EMOJI['trash']} Удалить", f"{EMOJI['info']} Статистика",
+                             f"{EMOJI['help']} Помощь", "🏠 В меню"]:
+                await self.back_to_menu(update, context)
+                return CHOOSING
             
             try:
                 book_id = int(user_input)
@@ -874,28 +920,34 @@ class BookBot:
                 ],
                 TYPING_SEARCH: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_search),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 TYPING_BOOK_INFO: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_type),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 TYPING_BOOK_DETAILS: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_book_details),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 UPLOADING_FILE: [
                     MessageHandler(filters.Document.ALL, self.handle_file_upload),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_add_type),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 PROCESSING_FILE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.process_file_book),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 TYPING_BOOK_ID: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_read_book),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
                 READING: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_reading_navigation),
                 ],
                 CONFIRM_DELETE: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.confirm_delete),
+                    MessageHandler(filters.Regex("^🏠 В меню$"), self.back_to_menu),
                 ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel)],
@@ -907,7 +959,6 @@ class BookBot:
         """Запуск бота."""
         self.setup()
         max_mb = MAX_FILE_SIZE // (1024 * 1024)
-
         
         self.application.run_polling(
             drop_pending_updates=True,
