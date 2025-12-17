@@ -844,7 +844,6 @@ class BookBot:
         self.setup()
         print("=" * 60)
         print(">>> BookBot запущен с функцией чтения книг!")
-               print("=" * 60)
         self.application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
