@@ -8,6 +8,13 @@ import sys
 import warnings
 from typing import List, Dict, Any
 
+# Исправляем кодировку для Windows
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='ignore')
+    except:
+        pass
+
 # Подавляем предупреждения
 warnings.filterwarnings("ignore", message=".*per_message=False.*")
 
@@ -69,7 +76,7 @@ class BookBot:
         """Команда /start."""
         try:
             user = update.effective_user
-            print(f"[START] от {user.id} (@{user.username})")
+            print(f"[START] от {user.id}")
             
             # Сначала простое сообщение
             await update.message.reply_text(
@@ -104,7 +111,7 @@ class BookBot:
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Команда /help."""
         try:
-            help_text = """📚 <b>BookBot - помощь</b>
+            help_text = """<b>BookBot - помощь</b>
 
 <b>Основные команды:</b>
 /start - Главное меню
@@ -150,7 +157,7 @@ class BookBot:
                 await update.message.reply_text(f"По запросу '{query}' ничего не найдено.")
                 return CHOOSING
             
-            response = f"📚 Найдено книг: {len(results)}\n\n"
+            response = f"Найдено книг: {len(results)}\n\n"
             for book in results[:5]:
                 response += f"<b>{book['title']}</b>\nАвтор: {book['author']}\nЖанр: {book['genre']}\nID: {book['id']}\n\n"
             
@@ -205,7 +212,7 @@ class BookBot:
                 context.user_data['add_type'] = 'with_content'
                 return TYPING_BOOK_DETAILS
             else:
-                await update.message.reply_text("❌ Введите 1 или 2")
+                await update.message.reply_text("Введите 1 или 2")
                 return TYPING_BOOK_INFO
                 
         except Exception as e:
@@ -221,7 +228,7 @@ class BookBot:
             if add_type == 'simple':
                 if "|" not in text or text.count("|") != 2:
                     await update.message.reply_text(
-                        "❌ Неверный формат. Используйте: Название | Автор | Жанр\n\n"
+                        "Неверный формат. Используйте: Название | Автор | Жанр\n\n"
                         "<i>Пример:</i>\n<code>Война и мир | Толстой | Роман</code>",
                         parse_mode=ParseMode.HTML
                     )
@@ -231,21 +238,21 @@ class BookBot:
                 title, author, genre = parts[0], parts[1], parts[2]
                 
                 if len(title) < 2 or len(author) < 2:
-                    await update.message.reply_text("❌ Слишком короткое название или автор")
+                    await update.message.reply_text("Слишком короткое название или автор")
                     return TYPING_BOOK_DETAILS
                 
                 book_id = self.db.add_book(title, author, genre)
                 await update.message.reply_text(
-                    f"✅ Книга добавлена! ID: {book_id}\n"
-                    f"📖 Название: {title}\n"
-                    f"👤 Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}"
+                    f"Книга добавлена! ID: {book_id}\n"
+                    f"Название: {title}\n"
+                    f"Автор: {author}\n"
+                    f"Жанр: {genre}"
                 )
                 
             else:  # with_content
                 if "|" not in text or text.count("|") < 3:
                     await update.message.reply_text(
-                        "❌ Неверный формат. Используйте: Название | Автор | Жанр | Текст книги\n\n"
+                        "Неверный формат. Используйте: Название | Автор | Жанр | Текст книги\n\n"
                         "<i>Пример:</i>\n<code>Книга | Автор | Жанр | Текст...</code>",
                         parse_mode=ParseMode.HTML
                     )
@@ -253,29 +260,29 @@ class BookBot:
                 
                 parts = [x.strip() for x in text.split("|", 3)]
                 if len(parts) < 4:
-                    await update.message.reply_text("❌ Неверный формат")
+                    await update.message.reply_text("Неверный формат")
                     return TYPING_BOOK_DETAILS
                 
                 title, author, genre, content = parts[0], parts[1], parts[2], parts[3]
                 
                 if len(title) < 2 or len(author) < 2:
-                    await update.message.reply_text("❌ Слишком короткое название или автор")
+                    await update.message.reply_text("Слишком короткое название или автор")
                     return TYPING_BOOK_DETAILS
                 
                 if len(content) < 10:
-                    await update.message.reply_text("❌ Текст слишком короткий (мин. 10 символов)")
+                    await update.message.reply_text("Текст слишком короткий (мин. 10 символов)")
                     return TYPING_BOOK_DETAILS
                 
                 book_id = self.db.add_book_with_content(title, author, genre, content)
                 pages = (len(content) // 2000) + 1
                 
                 await update.message.reply_text(
-                    f"✅ Книга с текстом добавлена!\n"
-                    f"📖 Название: {title}\n"
-                    f"👤 Автор: {author}\n"
-                    f"🏷️ Жанр: {genre}\n"
-                    f"📄 Страниц: {pages}\n"
-                    f"🔢 ID: {book_id}"
+                    f"Книга с текстом добавлена!\n"
+                    f"Название: {title}\n"
+                    f"Автор: {author}\n"
+                    f"Жанр: {genre}\n"
+                    f"Страниц: {pages}\n"
+                    f"ID: {book_id}"
                 )
             
             # Очищаем данные
@@ -286,7 +293,7 @@ class BookBot:
             
         except Exception as e:
             print(f"[ADD DETAILS ERROR] {e}")
-            await update.message.reply_text(f"❌ Ошибка добавления: {str(e)[:100]}")
+            await update.message.reply_text(f"Ошибка добавления")
             return CHOOSING
     
     # ========== СПИСОК КНИГ ==========
@@ -297,13 +304,13 @@ class BookBot:
             books_with_content = self.db.get_books_with_content()
             
             if not books and not books_with_content:
-                await update.message.reply_text("📚 Библиотека пуста. Добавьте первую книгу!")
+                await update.message.reply_text("Библиотека пуста. Добавьте первую книгу!")
                 return
             
-            response = "📚 <b>Ваша библиотека</b>\n\n"
+            response = "<b>Ваша библиотека</b>\n\n"
             
             if books:
-                response += f"<b>Книги для учета ({len(books)}):</b>\n"
+                response += f"Книги для учета ({len(books)}):\n"
                 for i, book in enumerate(books[:5], 1):
                     response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']})\n"
                 if len(books) > 5:
@@ -311,7 +318,7 @@ class BookBot:
                 response += "\n"
             
             if books_with_content:
-                response += f"<b>Книги для чтения ({len(books_with_content)}):</b>\n"
+                response += f"Книги для чтения ({len(books_with_content)}):\n"
                 for i, book in enumerate(books_with_content[:5], 1):
                     pages = book['pages'] if book['pages'] > 0 else 0
                     response += f"{i}. {book['title']} - {book['author']} (ID: {book['id']}, {pages} стр.)\n"
@@ -324,7 +331,7 @@ class BookBot:
             
         except Exception as e:
             print(f"[MYBOOKS ERROR] {e}")
-            await update.message.reply_text("❌ Ошибка получения списка")
+            await update.message.reply_text("Ошибка получения списка")
     
     # ========== ЧТЕНИЕ КНИГ ==========
     
@@ -333,17 +340,17 @@ class BookBot:
             books = self.db.get_books_with_content()
             
             if not books:
-                await update.message.reply_text("📖 Нет книг для чтения. Добавьте книгу с текстом!")
+                await update.message.reply_text("Нет книг для чтения. Добавьте книгу с текстом!")
                 return CHOOSING
             
-            response = "📖 <b>Доступные книги:</b>\n\n"
+            response = "<b>Доступные книги:</b>\n\n"
             for book in books[:10]:
                 pages = book['pages'] if book['pages'] > 0 else 0
-                response += f"<b>ID {book['id']}:</b> {book['title']}\n"
-                response += f"   👤 {book['author']} | 📝 {book['genre']} | 📄 {pages} стр.\n\n"
+                response += f"ID {book['id']}: {book['title']}\n"
+                response += f"   Автор: {book['author']} | Жанр: {book['genre']} | Страниц: {pages}\n\n"
             
             if len(books) > 10:
-                response += f"\n<i>Показано 10 из {len(books)} книг</i>"
+                response += f"\nПоказано 10 из {len(books)} книг"
             
             response += "\n<b>Введите ID книги для чтения:</b>"
             
@@ -360,40 +367,23 @@ class BookBot:
             book_id = int(update.message.text.strip())
             user_id = update.effective_user.id
             
-            print(f"[DEBUG] Пользователь {user_id} хочет читать книгу {book_id}")
+            # Получаем страницу книги
+            book_page = self.db.get_book_content(book_id, 1)
             
-            # Проверяем, есть ли такая книга
-            books = self.db.get_books_with_content()
-            book_exists = any(b['id'] == book_id for b in books)
-            
-            if not book_exists:
-                print(f"[DEBUG] Книга {book_id} не найдена")
-                await update.message.reply_text("❌ Книга не найдена или не содержит текста")
+            if not book_page:
+                await update.message.reply_text("Книга не найдена или не содержит текста")
                 return CHOOSING
             
-            print(f"[DEBUG] Книга {book_id} найдена")
-            
-            # Получаем прогресс чтения
+            # Получаем сохраненный прогресс
             saved_page = self.db.get_reading_progress(user_id, book_id)
             current_page = saved_page if saved_page else 1
             
-            print(f"[DEBUG] Текущая страница: {current_page}")
-            
-            # Получаем страницу книги
+            # Получаем текущую страницу
             book_page = self.db.get_book_content(book_id, current_page)
             
             if not book_page:
-                print(f"[DEBUG] Не удалось получить страницу {current_page}")
-                # Попробуем первую страницу
-                current_page = 1
-                book_page = self.db.get_book_content(book_id, current_page)
-                
-                if not book_page:
-                    print(f"[DEBUG] Не удалось получить первую страницу")
-                    await update.message.reply_text("❌ Ошибка загрузки текста книги")
-                    return CHOOSING
-            
-            print(f"[DEBUG] Страница получена: {book_page['title']}")
+                await update.message.reply_text("Ошибка загрузки текста книги")
+                return CHOOSING
             
             # Сохраняем данные в контексте
             context.user_data['current_book_id'] = book_id
@@ -418,35 +408,33 @@ class BookBot:
             
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
-            # Форматируем страницу
-            response = f"📖 <b>{book_page['title']}</b>\n"
-            response += f"👤 {book_page['author']}\n"
-            response += f"🏷️ {book_page['genre']}\n"
-            response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
-            response += f"📊 {book_page['progress']} ({book_page['percentage']}%)\n\n"
+            # Форматируем страницу (без эмодзи в тексте)
+            response = f"<b>{book_page['title']}</b>\n"
+            response += f"Автор: {book_page['author']}\n"
+            response += f"Жанр: {book_page['genre']}\n"
+            response += f"Страница {current_page}/{book_page['total_pages']}\n"
+            response += f"{book_page['progress']} ({book_page['percentage']}%)\n\n"
             
             # Добавляем текст (ограничиваем длину)
             text_content = book_page['content']
-            if len(text_content) > 3000:
-                text_content = text_content[:3000] + "..."
+            if len(text_content) > 1500:
+                text_content = text_content[:1500] + "..."
             
-            # Заменяем HTML-теги для безопасного отображения
+            # Безопасное отображение
             text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
             
             response += f"<pre>{text_content}</pre>\n\n"
-            response += "<i>Используйте кнопки для навигации</i>"
+            response += "Используйте кнопки для навигации"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return READING
             
         except ValueError:
-            await update.message.reply_text("❌ Введите числовой ID книги")
+            await update.message.reply_text("Введите числовой ID книги")
             return TYPING_BOOK_ID
         except Exception as e:
             print(f"[READ ERROR] {e}")
-            import traceback
-            traceback.print_exc()
-            await update.message.reply_text(f"❌ Ошибка начала чтения: {str(e)[:100]}")
+            await update.message.reply_text("Ошибка начала чтения")
             return CHOOSING
     
     async def handle_reading_navigation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -458,10 +446,8 @@ class BookBot:
             current_page = context.user_data.get('current_page', 1)
             
             if not book_id:
-                await update.message.reply_text("❌ Сессия потеряна. Начните заново.")
+                await update.message.reply_text("Сессия потеряна. Начните заново.")
                 return CHOOSING
-            
-            print(f"[DEBUG] Навигация: {command}, книга {book_id}, страница {current_page}")
             
             # Обработка команды "В меню"
             if command == "🏠 В меню":
@@ -486,10 +472,10 @@ class BookBot:
             elif command == "🔖 Сохранить":
                 # Сохраняем прогресс
                 self.db.save_reading_progress(user_id, book_id, current_page)
-                await update.message.reply_text(f"✅ Прогресс сохранен! Страница {current_page}")
+                await update.message.reply_text(f"Прогресс сохранен! Страница {current_page}")
                 book_page = self.db.get_book_content(book_id, current_page)
             else:
-                await update.message.reply_text("❌ Неизвестная команда")
+                await update.message.reply_text("Неизвестная команда")
                 book_page = self.db.get_book_content(book_id, current_page)
             
             # Если страница изменилась
@@ -497,17 +483,17 @@ class BookBot:
                 book_page = self.db.get_book_content(book_id, new_page)
                 
                 if not book_page:
-                    await update.message.reply_text("❌ Страница не найдена")
+                    await update.message.reply_text("Страница не найдена")
                     return READING
                 
                 current_page = new_page
                 context.user_data['current_page'] = current_page
             
-            # Если book_page еще не получен (например, при команде "Сохранить")
+            # Если book_page еще не получен
             if 'book_page' not in locals():
                 book_page = self.db.get_book_content(book_id, current_page)
             
-            # Сохраняем прогресс (авто-сохранение)
+            # Сохраняем прогресс
             self.db.save_reading_progress(user_id, book_id, current_page)
             
             # Создаем клавиатуру
@@ -530,28 +516,26 @@ class BookBot:
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
             # Форматируем ответ
-            response = f"📖 <b>{book_page['title']}</b>\n"
-            response += f"👤 {book_page['author']}\n"
-            response += f"🏷️ {book_page['genre']}\n"
-            response += f"📄 Страница {current_page}/{book_page['total_pages']}\n"
-            response += f"📊 {book_page['progress']} ({book_page['percentage']}%)\n\n"
+            response = f"<b>{book_page['title']}</b>\n"
+            response += f"Автор: {book_page['author']}\n"
+            response += f"Жанр: {book_page['genre']}\n"
+            response += f"Страница {current_page}/{book_page['total_pages']}\n"
+            response += f"{book_page['progress']} ({book_page['percentage']}%)\n\n"
             
             text_content = book_page['content']
-            if len(text_content) > 3000:
-                text_content = text_content[:3000] + "..."
+            if len(text_content) > 1500:
+                text_content = text_content[:1500] + "..."
             
             text_content = text_content.replace('<', '&lt;').replace('>', '&gt;')
             
             response += f"<pre>{text_content}</pre>\n\n"
-            response += "<i>Используйте кнопки для навигации</i>"
+            response += "Используйте кнопки для навигации"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
             return READING
             
         except Exception as e:
             print(f"[NAV ERROR] {e}")
-            import traceback
-            traceback.print_exc()
             return CHOOSING
     
     # ========== УДАЛЕНИЕ ==========
@@ -562,18 +546,18 @@ class BookBot:
             books_with_content = self.db.get_books_with_content()
             
             if not books and not books_with_content:
-                await update.message.reply_text("🗑️ Нет книг для удаления")
+                await update.message.reply_text("Нет книг для удаления")
                 return CHOOSING
             
-            response = "🗑️ <b>Выберите ID книги для удаления:</b>\n\n"
+            response = "<b>Выберите ID книги для удаления:</b>\n\n"
             
             if books:
-                response += "<b>Книги для учета:</b>\n"
+                response += "Книги для учета:\n"
                 for book in books[:8]:
                     response += f"  ID {book['id']}: {book['title'][:30]}...\n"
             
             if books_with_content:
-                response += "\n<b>Книги для чтения:</b>\n"
+                response += "\nКниги для чтения:\n"
                 for book in books_with_content[:8]:
                     response += f"  ID {book['id']}: {book['title'][:30]}...\n"
             
@@ -591,14 +575,14 @@ class BookBot:
             success = self.db.delete_book(book_id)
             
             if success:
-                await update.message.reply_text("✅ Книга удалена!")
+                await update.message.reply_text("Книга удалена!")
             else:
-                await update.message.reply_text("❌ Книга не найдена")
+                await update.message.reply_text("Книга не найдена")
             
             return CHOOSING
             
         except ValueError:
-            await update.message.reply_text("❌ Введите числовой ID")
+            await update.message.reply_text("Введите числовой ID")
             return CONFIRM_DELETE
         except Exception as e:
             print(f"[CONFIRM DELETE ERROR] {e}")
@@ -612,10 +596,10 @@ class BookBot:
             books_with_content = self.db.get_books_with_content()
             
             total = len(books) + len(books_with_content)
-            response = f"📊 <b>Статистика библиотеки</b>\n\n"
-            response += f"📚 Всего книг: {total}\n"
-            response += f"  📋 Для учета: {len(books)}\n"
-            response += f"  📖 Для чтения: {len(books_with_content)}\n"
+            response = f"<b>Статистика библиотеки</b>\n\n"
+            response += f"Всего книг: {total}\n"
+            response += f"  Для учета: {len(books)}\n"
+            response += f"  Для чтения: {len(books_with_content)}\n"
             
             await update.message.reply_text(response, parse_mode=ParseMode.HTML)
             
@@ -636,7 +620,7 @@ class BookBot:
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             
             await update.message.reply_text(
-                "🏠 <b>Главное меню</b>\n\nВыберите действие:",
+                "Главное меню\n\nВыберите действие:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup
             )
@@ -646,7 +630,7 @@ class BookBot:
             return CHOOSING
     
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(" Действие отменено")
+        await update.message.reply_text("Действие отменено")
         await self.back_to_menu(update, context)
         return CHOOSING
     
@@ -707,6 +691,11 @@ class BookBot:
     def run(self):
         """Запуск бота."""
         self.setup()
+        print("=" * 50)
+        print("BookBot запущен!")
+        print("Отправьте /start в Telegram")
+        print("Ctrl+C для остановки")
+        print("=" * 50)
         
         self.application.run_polling(
             poll_interval=1.0,
@@ -724,7 +713,7 @@ def main():
     token = args.token or "8039724055:AAHDEJs6rUxsgN8l2fJphLDAsQfq8FVZTLI"
     
     if not token:
-        print(" Укажите токен бота")
+        print("Укажите токен бота")
         sys.exit(1)
     
     bot = BookBot(token)
